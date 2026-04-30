@@ -24,6 +24,7 @@ SOFTWARE.
 // Removes the plugin step from an entity, if there are no registered autonumber records
 
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using Microsoft.Xrm.Sdk;
 
@@ -59,20 +60,51 @@ namespace Celedon
 
 			var remainingAutoNumberList = context.OrganizationDataContext.CreateQuery("cel_autonumber")
 																		 .Where(s => s.GetAttributeValue<string>("cel_entityname").Equals(context.PreImage.GetAttributeValue<string>("cel_entityname")))
-																		 .Select(s => new { Id = s.GetAttributeValue<Guid>("cel_autonumberid"), TriggerEvent = s.Contains("cel_triggerevent") ? s.GetAttributeValue<OptionSetValue>("cel_triggerevent").Value : 0  })
+																		 .Select(s => new {
+																			 Id = s.GetAttributeValue<Guid>("cel_autonumberid"),
+																			 TriggerEvent = s.Contains("cel_triggerevent") ? s.GetAttributeValue<OptionSetValue>("cel_triggerevent").Value : 0,
+																			 TriggerAttribute = s.GetAttributeValue<string>("cel_triggerattribute"),
+																			 AttributeName = s.GetAttributeValue<string>("cel_attributename"),
+																			 ConditionalOptionSet = s.GetAttributeValue<string>("cel_conditionaloptionset")
+																		 })
 																		 .ToList();
 
-			if (remainingAutoNumberList.Any(s => s.TriggerEvent == triggerEvent ))  // If there are still other autonumber records on this entity, then do nothing.
-			{
-				return;  
-			}
-
-			// Find and remove the registerd plugin
 			var pluginName = string.Format(CreateAutoNumber.PluginName, context.PreImage.GetAttributeValue<string>("cel_entityname"));
-
-			if (context.PreImage.Contains("cel_triggerevent") && context.PreImage.GetAttributeValue<OptionSetValue>("cel_triggerevent").Value == 1)
+			if (triggerEvent == 1)
 			{
 				pluginName += " Update";
+			}
+
+			var remainingForEvent = remainingAutoNumberList.Where(s => s.TriggerEvent == triggerEvent).ToList();
+
+			if (remainingForEvent.Any())  // If there are still other autonumber records on this entity, keep the step but recompute its filter for Update.
+			{
+				if (triggerEvent == 1)
+				{
+					var rebuilt = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+					foreach (var record in remainingForEvent)
+					{
+						if (!string.IsNullOrWhiteSpace(record.TriggerAttribute)) rebuilt.Add(record.TriggerAttribute);
+						if (!string.IsNullOrWhiteSpace(record.AttributeName)) rebuilt.Add(record.AttributeName);
+						if (!string.IsNullOrWhiteSpace(record.ConditionalOptionSet)) rebuilt.Add(record.ConditionalOptionSet);
+					}
+
+					var stepId = context.OrganizationDataContext.CreateQuery("sdkmessageprocessingstep")
+																.Where(s => s.GetAttributeValue<string>("name").Equals(pluginName))
+																.Select(s => s.GetAttributeValue<Guid>("sdkmessageprocessingstepid"))
+																.ToList()
+																.FirstOrDefault();
+
+					if (stepId != Guid.Empty)
+					{
+						context.OrganizationService.Update(new Entity("sdkmessageprocessingstep", stepId)
+						{
+							["filteringattributes"] = string.Join(",", rebuilt)
+						});
+					}
+				}
+
+				return;
 			}
 
 			var pluginStepList = context.OrganizationDataContext.CreateQuery("sdkmessageprocessingstep")
