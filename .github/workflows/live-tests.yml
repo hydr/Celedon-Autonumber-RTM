@@ -1,0 +1,126 @@
+name: live-tests
+
+# Live tests run the AutoNumber plugins against a real Dataverse environment.
+# Auth: passwordless OIDC (azure/login@v2 + Federated Credential on the AAD app).
+# Trigger: manual only — these tests create real records in your Dataverse org.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch / tag / SHA to run against"
+        required: false
+        default: ""
+
+permissions:
+  id-token: write   # required to receive the GitHub OIDC JWT
+  contents: read
+
+# Tests share the (entity, event) plugin step in Dataverse.  Serialize across
+# branches/runs so concurrent jobs don't fight over the same step records.
+concurrency:
+  group: dataverse-live
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: windows-latest
+    # Configure this environment in repo Settings → Environments.  Set its branch
+    # protection so only approved branches can run against the org, and have the
+    # AAD Federated Credential map to subject
+    #   repo:hydr/Celedon-Autonumber-RTM:environment:live-tests
+    environment: live-tests
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Setup NuGet
+        uses: NuGet/setup-nuget@v2
+
+      - name: Restore NuGet packages
+        run: nuget restore AutoNumber.sln
+
+      - name: Build solution (Release)
+        run: msbuild AutoNumber.sln /p:Configuration=Release /p:Platform="Any CPU" /m /nologo /verbosity:minimal
+
+      - name: Install NUnit Console Runner
+        run: nuget install NUnit.ConsoleRunner -Version 3.18.3 -OutputDirectory testrunner -ExcludeVersion
+
+      - name: Azure login (OIDC, federated credentials)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      - name: Acquire Dataverse access token
+        shell: pwsh
+        run: |
+          $url = "${{ vars.DATAVERSE_URL }}"
+          if ([string]::IsNullOrEmpty($url)) {
+              throw "DATAVERSE_URL repository variable is not set."
+          }
+          $token = (az account get-access-token --resource $url --query accessToken -o tsv)
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrEmpty($token)) {
+              throw "Failed to acquire Dataverse access token via az account get-access-token."
+          }
+          # Mask the token in workflow logs and expose to subsequent steps.
+          Write-Host "::add-mask::$token"
+          "DATAVERSE_TOKEN=$token" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "DATAVERSE_URL=$url"     | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Run live tests
+        id: test_run
+        continue-on-error: true
+        run: testrunner\NUnit.ConsoleRunner\tools\nunit3-console.exe AutoNumber.Tests\bin\Release\AutoNumber.Tests.dll --where "cat == Live" --result=TestResult.xml
+
+      - name: Report test results
+        if: always()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $sha = "${{ github.sha }}"
+          $body = "## Live tests on $sha (test step outcome: ${{ steps.test_run.outcome }})`n`n"
+          try {
+            if (-not (Test-Path TestResult.xml)) {
+              $body += "No TestResult.xml produced.`n"
+            } else {
+              [xml]$xml = Get-Content TestResult.xml
+              $f = @($xml.SelectNodes("//test-case[@result='Failed']"))
+              $p = @($xml.SelectNodes("//test-case[@result='Passed']"))
+              $s = @($xml.SelectNodes("//test-case[@result='Skipped']"))
+              $body += "Passed: $($p.Count) | Failed: $($f.Count) | Skipped: $($s.Count)`n`n"
+              foreach ($t in $f) {
+                $name = $t.fullname
+                $msgNode = $t.SelectSingleNode('failure/message')
+                $stkNode = $t.SelectSingleNode('failure/stack-trace')
+                $msg = if ($msgNode) { $msgNode.InnerText.Trim() } else { '(no message)' }
+                $stk = if ($stkNode) { $stkNode.InnerText.Trim() } else { '(no stack trace)' }
+                $fence = '```'
+                $body += "<details><summary>$name</summary>`n`n$fence`n$msg`n`n$stk`n$fence`n`n</details>`n`n"
+              }
+            }
+          } catch {
+            $body += "Parser error: $_`n"
+          }
+          $body | Out-File -FilePath summary.md -Encoding utf8
+          # Append to the run's job summary so it shows on the workflow page.
+          Get-Content summary.md | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-test-results
+          path: TestResult.xml
+
+      - name: Fail job if tests failed
+        if: steps.test_run.outcome == 'failure'
+        run: exit 1
