@@ -35,44 +35,39 @@ jobs:
         continue-on-error: true
         run: testrunner\NUnit.ConsoleRunner\tools\nunit3-console.exe AutoNumber.Tests\bin\Release\AutoNumber.Tests.dll --result=TestResult.xml
 
-      - name: Summarize test failures into job summary
-        if: always()
-        shell: pwsh
-        run: |
-          if (-not (Test-Path TestResult.xml)) {
-              "No TestResult.xml produced." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-              exit 0
-          }
-          [xml]$xml = Get-Content TestResult.xml
-          $failures = @($xml.SelectNodes("//test-case[@result='Failed']"))
-          $skipped  = @($xml.SelectNodes("//test-case[@result='Skipped']"))
-          $passed   = @($xml.SelectNodes("//test-case[@result='Passed']"))
-          $summary  = "## NUnit results`n`nPassed: $($passed.Count) | Failed: $($failures.Count) | Skipped: $($skipped.Count)`n`n"
-          foreach ($f in $failures) {
-              $msg = $f.SelectSingleNode('failure/message').InnerText.Trim()
-              $stk = $f.SelectSingleNode("failure/stack-trace").InnerText.Trim()
-              $summary += "### $($f.fullname)`n`n````n$msg`n`n$stk`n````n`n"
-          }
-          $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-
-      - name: Post failures as PR comment
-        if: steps.test_run.outcome == 'failure' && github.event_name == 'pull_request'
+      - name: Report test results
+        if: always() && github.event_name == 'pull_request'
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          if (-not (Test-Path TestResult.xml)) { exit 0 }
-          [xml]$xml = Get-Content TestResult.xml
-          $failures = @($xml.SelectNodes("//test-case[@result='Failed']"))
-          if ($failures.Count -eq 0) { exit 0 }
-          $body = "## CI test failures (commit ${{ github.sha }})`n`n"
-          foreach ($f in $failures) {
-              $msg = $f.SelectSingleNode('failure/message').InnerText.Trim()
-              $stk = $f.SelectSingleNode("failure/stack-trace").InnerText.Trim()
-              $body += "<details><summary>$($f.fullname)</summary>`n`n````n$msg`n`n$stk`n````n`n</details>`n`n"
+          $sha = "${{ github.sha }}"
+          $body = "## CI run on $sha (test step outcome: ${{ steps.test_run.outcome }})`n`n"
+          try {
+            if (-not (Test-Path TestResult.xml)) {
+              $body += "No TestResult.xml produced.`n"
+            } else {
+              [xml]$xml = Get-Content TestResult.xml
+              $f = @($xml.SelectNodes("//test-case[@result='Failed']"))
+              $p = @($xml.SelectNodes("//test-case[@result='Passed']"))
+              $s = @($xml.SelectNodes("//test-case[@result='Skipped']"))
+              $body += "Passed: $($p.Count) | Failed: $($f.Count) | Skipped: $($s.Count)`n`n"
+              foreach ($t in $f) {
+                $name = $t.fullname
+                $msgNode = $t.SelectSingleNode('failure/message')
+                $stkNode = $t.SelectSingleNode('failure/stack-trace')
+                $msg = if ($msgNode) { $msgNode.InnerText.Trim() } else { '(no message)' }
+                $stk = if ($stkNode) { $stkNode.InnerText.Trim() } else { '(no stack trace)' }
+                $fence = '```'
+                $body += "<details><summary>$name</summary>`n`n$fence`n$msg`n`n$stk`n$fence`n`n</details>`n`n"
+              }
+            }
+          } catch {
+            $body += "Parser error: $_`n"
           }
           $body | Out-File -FilePath comment.md -Encoding utf8
-          gh pr comment ${{ github.event.pull_request.number }} --body-file comment.md
+          gh pr comment $env:PR_NUMBER --body-file comment.md
 
       - name: Upload test results
         if: always()
