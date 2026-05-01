@@ -1,0 +1,41 @@
+name: build
+
+on:
+  push:
+    branches: [main, master, "claude/**"]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Setup NuGet
+        uses: NuGet/setup-nuget@v2
+
+      - name: Restore NuGet packages
+        run: nuget restore AutoNumber.sln
+
+      - name: Build solution (Release)
+        run: msbuild AutoNumber.sln /p:Configuration=Release /p:Platform="Any CPU" /m /nologo /verbosity:minimal
+
+      - name: Install NUnit Console Runner
+        run: nuget install NUnit.ConsoleRunner -Version 3.18.3 -OutputDirectory testrunner -ExcludeVersion
+
+      - name: Run tests
+        run: testrunner\NUnit.ConsoleRunner\tools\nunit3-console.exe AutoNumber.Tests\bin\Release\AutoNumber.Tests.dll --result=TestResult.xml
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: TestResult.xml
