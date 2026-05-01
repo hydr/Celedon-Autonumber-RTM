@@ -31,7 +31,48 @@ jobs:
         run: nuget install NUnit.ConsoleRunner -Version 3.18.3 -OutputDirectory testrunner -ExcludeVersion
 
       - name: Run tests
+        id: test_run
+        continue-on-error: true
         run: testrunner\NUnit.ConsoleRunner\tools\nunit3-console.exe AutoNumber.Tests\bin\Release\AutoNumber.Tests.dll --result=TestResult.xml
+
+      - name: Summarize test failures into job summary
+        if: always()
+        shell: pwsh
+        run: |
+          if (-not (Test-Path TestResult.xml)) {
+              "No TestResult.xml produced." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              exit 0
+          }
+          [xml]$xml = Get-Content TestResult.xml
+          $failures = @($xml.SelectNodes("//test-case[@result='Failed']"))
+          $skipped  = @($xml.SelectNodes("//test-case[@result='Skipped']"))
+          $passed   = @($xml.SelectNodes("//test-case[@result='Passed']"))
+          $summary  = "## NUnit results`n`nPassed: $($passed.Count) | Failed: $($failures.Count) | Skipped: $($skipped.Count)`n`n"
+          foreach ($f in $failures) {
+              $msg = $f.SelectSingleNode('failure/message').InnerText.Trim()
+              $stk = $f.SelectSingleNode("failure/stack-trace").InnerText.Trim()
+              $summary += "### $($f.fullname)`n`n````n$msg`n`n$stk`n````n`n"
+          }
+          $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: Post failures as PR comment
+        if: steps.test_run.outcome == 'failure' && github.event_name == 'pull_request'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if (-not (Test-Path TestResult.xml)) { exit 0 }
+          [xml]$xml = Get-Content TestResult.xml
+          $failures = @($xml.SelectNodes("//test-case[@result='Failed']"))
+          if ($failures.Count -eq 0) { exit 0 }
+          $body = "## CI test failures (commit ${{ github.sha }})`n`n"
+          foreach ($f in $failures) {
+              $msg = $f.SelectSingleNode('failure/message').InnerText.Trim()
+              $stk = $f.SelectSingleNode("failure/stack-trace").InnerText.Trim()
+              $body += "<details><summary>$($f.fullname)</summary>`n`n````n$msg`n`n$stk`n````n`n</details>`n`n"
+          }
+          $body | Out-File -FilePath comment.md -Encoding utf8
+          gh pr comment ${{ github.event.pull_request.number }} --body-file comment.md
 
       - name: Upload test results
         if: always()
@@ -39,3 +80,7 @@ jobs:
         with:
           name: test-results
           path: TestResult.xml
+
+      - name: Fail job if tests failed
+        if: steps.test_run.outcome == 'failure'
+        run: exit 1
