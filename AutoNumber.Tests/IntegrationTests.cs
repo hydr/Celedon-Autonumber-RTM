@@ -541,20 +541,32 @@ namespace Celedon
 			string conditionalAttr = null, int conditionalValue = 0,
 			int statecode = 0)
 		{
+			// Only seed the optional fields when explicitly set.  GetNextAutoNumber
+			// uses Entity.Contains(...) to gate the conditional and trigger-attribute
+			// branches, so setting them to "" makes the plugin take the wrong path.
 			var id = Guid.NewGuid();
-			return _harness.Service.Seed("cel_autonumber", id,
+			var attrs = new List<object>
+			{
 				"cel_autonumberid", id,
 				"cel_entityname", EntityName,
 				"cel_attributename", targetAttr,
 				"cel_triggerevent", new OptionSetValue(triggerEvent),
-				"cel_triggerattribute", triggerAttr ?? "",
-				"cel_conditionaloptionset", conditionalAttr ?? "",
-				"cel_conditionalvalue", conditionalValue,
 				"cel_digits", digits,
 				"cel_prefix", prefix ?? "",
 				"cel_suffix", suffix ?? "",
 				"cel_nextnumber", nextNumber,
-				"statecode", new OptionSetValue(statecode));
+				"statecode", new OptionSetValue(statecode),
+			};
+			if (!string.IsNullOrEmpty(triggerAttr))
+			{
+				attrs.Add("cel_triggerattribute"); attrs.Add(triggerAttr);
+			}
+			if (!string.IsNullOrEmpty(conditionalAttr))
+			{
+				attrs.Add("cel_conditionaloptionset"); attrs.Add(conditionalAttr);
+				attrs.Add("cel_conditionalvalue"); attrs.Add(conditionalValue);
+			}
+			return _harness.Service.Seed("cel_autonumber", id, attrs.ToArray());
 		}
 
 		private static string ConfigJson(string eventName)
