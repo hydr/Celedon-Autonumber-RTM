@@ -76,6 +76,10 @@ namespace Celedon
 		{
 			var id = entity.Id == Guid.Empty ? Guid.NewGuid() : entity.Id;
 			entity.Id = id;
+			// Mirror the Dataverse convention so that LINQ queries reading
+			// .GetAttributeValue<Guid>("<logicalname>id") see the assigned id.
+			var pkAttr = entity.LogicalName + "id";
+			if (!entity.Contains(pkAttr)) entity[pkAttr] = id;
 			CreateCalls.Add(Clone(entity));
 			Bucket(entity.LogicalName)[id] = Clone(entity);
 			return id;
@@ -553,12 +557,19 @@ namespace Celedon
 				"statecode", new OptionSetValue(statecode));
 		}
 
+		private static string ConfigJson(string eventName)
+		{
+			// Build the unsecure-config the same way CreateAutoNumber does, so
+			// AutoNumberPluginConfig.TryParseJson (DataContractJsonSerializer)
+			// accepts it without ambiguity.
+			return new AutoNumberPluginConfig { EntityName = EntityName, EventName = eventName }.ToJson();
+		}
+
 		private Entity RunCreate(Entity target)
 		{
 			_harness.MessageName = Constants.PipelineMessage.Create;
 			_harness.InputParameters["Target"] = target;
-			new GetNextAutoNumber("{ \"EntityName\": \"" + EntityName + "\", \"EventName\": \"Create\" }")
-				.Execute(_harness.Build());
+			new GetNextAutoNumber(ConfigJson("Create")).Execute(_harness.Build());
 			return target;
 		}
 
@@ -567,8 +578,7 @@ namespace Celedon
 			_harness.MessageName = Constants.PipelineMessage.Update;
 			_harness.InputParameters["Target"] = target;
 			_harness.PreEntityImages["Image"] = preImage ?? new Entity(EntityName);
-			new GetNextAutoNumber("{ \"EntityName\": \"" + EntityName + "\", \"EventName\": \"Update\" }")
-				.Execute(_harness.Build());
+			new GetNextAutoNumber(ConfigJson("Update")).Execute(_harness.Build());
 			return target;
 		}
 
