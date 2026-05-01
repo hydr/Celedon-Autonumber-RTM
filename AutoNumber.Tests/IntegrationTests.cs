@@ -157,6 +157,38 @@ namespace Celedon
 		public OrganizationResponse Execute(OrganizationRequest request)
 		{
 			ExecuteCalls.Add(request);
+
+			// The OrganizationServiceContext LINQ provider routes RetrieveMultiple (and a few
+			// others) through Execute, not through the typed IOrganizationService methods.
+			// Handle the common ones internally so ExecuteHandler only sees genuinely-unhandled
+			// requests (typically metadata calls in tests that need to stub them).
+			switch (request)
+			{
+				case RetrieveMultipleRequest rm:
+					return new RetrieveMultipleResponse
+					{
+						Results = { ["EntityCollection"] = RetrieveMultiple((QueryBase)rm["Query"]) }
+					};
+				case RetrieveRequest rr:
+					var rTarget = (EntityReference)rr["Target"];
+					return new RetrieveResponse
+					{
+						Results = { ["Entity"] = Retrieve(rTarget.LogicalName, rTarget.Id, (ColumnSet)rr["ColumnSet"]) }
+					};
+				case CreateRequest cr:
+					return new CreateResponse
+					{
+						Results = { ["id"] = Create((Entity)cr["Target"]) }
+					};
+				case UpdateRequest ur:
+					Update((Entity)ur["Target"]);
+					return new UpdateResponse();
+				case DeleteRequest dr:
+					var dTarget = (EntityReference)dr["Target"];
+					Delete(dTarget.LogicalName, dTarget.Id);
+					return new DeleteResponse();
+			}
+
 			if (ExecuteHandler != null) return ExecuteHandler(request);
 			throw new NotSupportedException($"FakeOrganizationService: Execute({request.RequestName}) was not configured.");
 		}
