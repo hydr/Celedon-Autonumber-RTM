@@ -1073,7 +1073,7 @@ namespace Celedon
 			_harness = new PluginHarness
 			{
 				MessageName = GenerateAutoNumberAction.MessageName,
-				Stage = Constants.PipelineStage.MainOperation,
+				Stage = Constants.PipelineStage.PostOperation,
 				PrimaryEntityName = "",
 			};
 		}
@@ -1107,10 +1107,11 @@ namespace Celedon
 		{
 			_harness.InputParameters.Clear();
 			_harness.OutputParameters.Clear();
-			_harness.InputParameters["Target"] = new EntityReference(EntityName, accountId);
+			_harness.InputParameters["TargetEntity"] = EntityName;
+			_harness.InputParameters["TargetId"] = accountId.ToString();
 			if (configId.HasValue)
 			{
-				_harness.InputParameters["AutoNumberConfig"] = new EntityReference("cel_autonumber", configId.Value);
+				_harness.InputParameters["AutoNumberConfigId"] = configId.Value.ToString();
 			}
 			if (attributeName != null)
 			{

@@ -204,8 +204,9 @@ namespace Celedon
 				Is.Null.Or.Empty, "Precondition: the field must be empty before the on-demand call.");
 
 			var req = new OrganizationRequest("cel_GenerateAutoNumber");
-			req["Target"] = new EntityReference(TargetEntity, accountId);
-			req["AutoNumberConfig"] = new EntityReference("cel_autonumber", configId);
+			req["TargetEntity"] = TargetEntity;
+			req["TargetId"] = accountId.ToString();
+			req["AutoNumberConfigId"] = configId.ToString();
 			var number = (string)_client.Execute(req).Results["Number"];
 
 			Assert.That(number, Does.Match(@"^CI-OD-\d{4}$"), "Action must return the generated number.");

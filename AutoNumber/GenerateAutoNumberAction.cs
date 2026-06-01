@@ -37,18 +37,22 @@ namespace Celedon
 {
 	public class GenerateAutoNumberAction : CeledonPlugin
 	{
-		public const string MessageName = "cel_GenerateAutoNumber";
-		public const string InTarget    = "Target";           // EntityReference (required)
-		public const string InConfig    = "AutoNumberConfig"; // EntityReference to cel_autonumber (optional)
-		public const string InAttribute = "AttributeName";    // String (fallback when no config given)
-		public const string OutNumber   = "Number";           // String (output)
+		public const string MessageName    = "cel_GenerateAutoNumber";
+		public const string InTargetEntity = "TargetEntity";       // String, logical name (required)
+		public const string InTargetId     = "TargetId";           // String, GUID of the record (required)
+		public const string InConfigId     = "AutoNumberConfigId"; // String, GUID of cel_autonumber (optional)
+		public const string InAttribute    = "AttributeName";      // String (fallback when no config given)
+		public const string OutNumber      = "Number";             // String (output)
 
 		public GenerateAutoNumberAction()
 		{
 			// Global custom action: empty entity name => wildcard match in CeledonPlugin.Execute.
-			// Stage 30 (Main/Core Operation) runs inside the platform transaction, so the
-			// cel_preview lock + counter increment stay serialized against concurrent callers.
-			RegisterEvent(PipelineStage.MainOperation, MessageName, "", Execute);
+			// Stage 40 (PostOperation) is INSIDE the platform transaction (so the cel_preview lock +
+			// counter increment stay serialized) AND runs after the action's core operation, so the
+			// Number output parameter we set is the one returned to the caller. (At stage 20 the core
+			// operation resets output parameters to their declared default, losing the value. Stage 30
+			// cannot host a registered step.)
+			RegisterEvent(PipelineStage.PostOperation, MessageName, "", Execute);
 		}
 
 		protected void Execute(LocalPluginContext context)
@@ -56,10 +60,16 @@ namespace Celedon
 			var input = context.PluginExecutionContext.InputParameters;
 			var service = context.OrganizationService;
 
-			if (!input.TryGetValueNotNull(InTarget, out EntityReference target))
+			if (!input.TryGetValueNotNull(InTargetEntity, out string targetEntity) || string.IsNullOrWhiteSpace(targetEntity))
 			{
-				throw new InvalidPluginExecutionException($"{MessageName}: '{InTarget}' (EntityReference) is required.");
+				throw new InvalidPluginExecutionException($"{MessageName}: '{InTargetEntity}' is required.");
 			}
+			if (!input.TryGetValueNotNull(InTargetId, out string targetIdRaw) || !Guid.TryParse(targetIdRaw, out var targetId))
+			{
+				throw new InvalidPluginExecutionException($"{MessageName}: '{InTargetId}' must be a valid GUID.");
+			}
+
+			var target = new EntityReference(targetEntity, targetId);
 
 			var config = ResolveConfig(context, target);
 			var targetAttribute = config.GetAttributeValue<string>("cel_attributename");
@@ -89,9 +99,14 @@ namespace Celedon
 			var input = context.PluginExecutionContext.InputParameters;
 			var service = context.OrganizationService;
 
-			if (input.TryGetValueNotNull(InConfig, out EntityReference configRef))
+			if (input.TryGetValueNotNull(InConfigId, out string configIdRaw) && !string.IsNullOrWhiteSpace(configIdRaw))
 			{
-				var config = service.Retrieve("cel_autonumber", configRef.Id, AutoNumberColumns());
+				if (!Guid.TryParse(configIdRaw, out var configId))
+				{
+					throw new InvalidPluginExecutionException($"{MessageName}: '{InConfigId}' must be a valid GUID.");
+				}
+
+				var config = service.Retrieve("cel_autonumber", configId, AutoNumberColumns());
 				var configEntity = config.GetAttributeValue<string>("cel_entityname");
 				if (!string.Equals(configEntity, target.LogicalName, StringComparison.OrdinalIgnoreCase))
 				{
@@ -103,7 +118,7 @@ namespace Celedon
 
 			if (!input.TryGetValueNotNull(InAttribute, out string attributeName) || string.IsNullOrWhiteSpace(attributeName))
 			{
-				throw new InvalidPluginExecutionException($"{MessageName}: provide '{InConfig}' or '{InAttribute}'.");
+				throw new InvalidPluginExecutionException($"{MessageName}: provide '{InConfigId}' or '{InAttribute}'.");
 			}
 
 			var matches = context.OrganizationDataContext.CreateQuery("cel_autonumber")
@@ -122,7 +137,7 @@ namespace Celedon
 			if (matches.Count > 1)
 			{
 				throw new InvalidPluginExecutionException(
-					$"{MessageName}: multiple active cel_autonumber records for {target.LogicalName}.{attributeName}. Pass '{InConfig}' to disambiguate.");
+					$"{MessageName}: multiple active cel_autonumber records for {target.LogicalName}.{attributeName}. Pass '{InConfigId}' to disambiguate.");
 			}
 
 			return service.Retrieve("cel_autonumber", matches[0], AutoNumberColumns());
