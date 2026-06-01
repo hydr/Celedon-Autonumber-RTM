@@ -27,6 +27,7 @@ namespace Celedon.Constants
     {
         public const int PreValidation = 10;
         public const int PreOperation = 20;
+        public const int MainOperation = 30;  // Core Operation — used by custom action message handlers
         public const int PostOperation = 40;
     }
 }

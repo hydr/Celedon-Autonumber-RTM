@@ -186,6 +186,35 @@ namespace Celedon
 				"Plugin should have populated accountnumber on Create.");
 		}
 
+		[Test]
+		public void OnDemand_action_assigns_number_to_existing_record()
+		{
+			const string attr = "fax";
+
+			// Update-event config so the Create pipeline does NOT auto-populate the field —
+			// this isolates the on-demand path. The field stays empty on Create.
+			var configId = CreateAutoNumber(eventCode: 1, triggerAttribute: "telephone1",
+				targetAttribute: attr, prefix: "CI-OD-", digits: 4, nextNumber: 1);
+
+			var account = new Entity(TargetEntity) { ["name"] = "ci-od-" + Guid.NewGuid() };
+			var accountId = _client.Create(account);
+			_toCleanup.Add(new EntityReference(TargetEntity, accountId));
+
+			Assert.That(_client.Retrieve(TargetEntity, accountId, new ColumnSet(attr)).GetAttributeValue<string>(attr),
+				Is.Null.Or.Empty, "Precondition: the field must be empty before the on-demand call.");
+
+			var req = new OrganizationRequest("cel_GenerateAutoNumber");
+			req["Target"] = new EntityReference(TargetEntity, accountId);
+			req["AutoNumberConfig"] = new EntityReference("cel_autonumber", configId);
+			var number = (string)_client.Execute(req).Results["Number"];
+
+			Assert.That(number, Does.Match(@"^CI-OD-\d{4}$"), "Action must return the generated number.");
+
+			var stored = _client.Retrieve(TargetEntity, accountId, new ColumnSet(attr));
+			Assert.That(stored.GetAttributeValue<string>(attr), Is.EqualTo(number),
+				"The generated number must be written onto the target field.");
+		}
+
 		#endregion
 
 		#region Helpers

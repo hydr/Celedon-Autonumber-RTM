@@ -120,28 +120,44 @@ namespace Celedon
 				#endregion
 
 				#region Create the AutoNumber
-				var numDigits = autoNumber.GetAttributeValue<int>("cel_digits");
-
-			    var prefix = context.OrganizationService.ReplaceParameters(target, autoNumber.GetAttributeValue<string>("cel_prefix"));
-
-			    var number = numDigits == 0 ? "" : autoNumber.GetAttributeValue<int>("cel_nextnumber").ToString("D" + numDigits);
-
-                var postfix = context.OrganizationService.ReplaceParameters(target, autoNumber.GetAttributeValue<string>("cel_suffix"));
-                // Generate number and insert into target Record
-			    target[targetAttribute] = $"{prefix}{number}{postfix}";
-
-				// Increment next number in db
-			    var updatedAutoNumber = new Entity("cel_autonumber")
-			    {
-			        Id = autoNumber.Id,
-			        ["cel_nextnumber"] = autoNumber.GetAttributeValue<int>("cel_nextnumber") + 1,
-			        ["cel_preview"] = target[targetAttribute]
-			    };
-
-			    context.OrganizationService.Update(updatedAutoNumber);
+				// Generate number and insert into target Record (shared core; also used by the on-demand action)
+				target[targetAttribute] = GenerateNumber(context.OrganizationService, context.TracingService, autoNumber, target);
 				#endregion
 			}
 			#endregion
+		}
+
+		/// <summary>
+		/// Locks the cel_autonumber config record (via cel_preview), builds the formatted number
+		/// (prefix + zero-padded cel_nextnumber + suffix, with {token} replacement resolved against
+		/// <paramref name="parameterContext"/>), increments cel_nextnumber, and returns the result.
+		/// Contains NO pipeline guards (conditional optionset / overwrite / trigger-attribute checks) —
+		/// callers apply whatever guards their context requires.
+		/// </summary>
+		/// <param name="autoNumberConfig">cel_autonumber record holding at least cel_digits, cel_prefix, cel_nextnumber, cel_suffix.</param>
+		/// <param name="parameterContext">Entity used to resolve {token} runtime parameters in prefix/suffix.</param>
+		internal static string GenerateNumber(IOrganizationService service, ITracingService tracing, Entity autoNumberConfig, Entity parameterContext)
+		{
+			// Lock the config row so only this transaction can read/write the counter.
+			service.Update(new Entity("cel_autonumber") { Id = autoNumberConfig.Id, ["cel_preview"] = "555" });
+
+			var numDigits = autoNumberConfig.GetAttributeValue<int>("cel_digits");
+			var prefix = service.ReplaceParameters(parameterContext, autoNumberConfig.GetAttributeValue<string>("cel_prefix"));
+			var number = numDigits == 0 ? "" : autoNumberConfig.GetAttributeValue<int>("cel_nextnumber").ToString("D" + numDigits);
+			var postfix = service.ReplaceParameters(parameterContext, autoNumberConfig.GetAttributeValue<string>("cel_suffix"));
+
+			var result = $"{prefix}{number}{postfix}";
+			tracing?.Trace("Generated autonumber '{0}' from config {1}", result, autoNumberConfig.Id);
+
+			// Increment next number in db
+			service.Update(new Entity("cel_autonumber")
+			{
+				Id = autoNumberConfig.Id,
+				["cel_nextnumber"] = autoNumberConfig.GetAttributeValue<int>("cel_nextnumber") + 1,
+				["cel_preview"] = result
+			});
+
+			return result;
 		}
 	}
 }
