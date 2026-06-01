@@ -1,0 +1,108 @@
+name: release
+
+# Builds versioned managed + unmanaged solution zips and publishes them.
+#
+#   * Push a tag  vX.Y  or  vX.Y.Z   -> cuts a real GitHub Release with both
+#     zips attached. The 4th version part is the CI run number (build number),
+#     so every build is uniquely identifiable, e.g. tag v1.3 -> 1.3.0.<run>.
+#   * Manual run (workflow_dispatch) -> builds the zips and uploads them as
+#     downloadable run artifacts only (no Release, no tag needed). Useful for
+#     test builds.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Base version Major.Minor or Major.Minor.Patch (artifact build only, no release)"
+        required: true
+        default: "1.3.0"
+
+permissions:
+  contents: write   # required to create a GitHub Release
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compute version
+        id: ver
+        shell: pwsh
+        run: |
+          if ("${{ github.ref_type }}" -eq "tag") {
+              $base = "${{ github.ref_name }}" -replace '^v', ''
+          } else {
+              $base = "${{ github.event.inputs.version }}" -replace '^v', ''
+          }
+          $parts = $base.Split('.')
+          if ($parts.Count -lt 2 -or $parts.Count -gt 3) {
+              throw "Version must be Major.Minor or Major.Minor.Patch (got '$base')."
+          }
+          $major = [int]$parts[0]
+          $minor = [int]$parts[1]
+          $patch = if ($parts.Count -ge 3) { [int]$parts[2] } else { 0 }
+          $build = ${{ github.run_number }}
+          $full  = "$major.$minor.$patch.$build"
+          Write-Host "Solution version: $full"
+          "version=$full"            | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "version_label=$major.$minor.$patch" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Setup NuGet
+        uses: NuGet/setup-nuget@v2
+
+      - name: Restore NuGet packages
+        run: nuget restore AutoNumber.sln
+
+      - name: Build solution (Release)
+        run: msbuild AutoNumber.sln /p:Configuration=Release /p:Platform="Any CPU" /m /nologo /verbosity:minimal
+
+      - name: Install NUnit Console Runner
+        run: nuget install NUnit.ConsoleRunner -Version 3.18.3 -OutputDirectory testrunner -ExcludeVersion
+
+      - name: Run in-process tests (excludes Live)
+        run: testrunner\NUnit.ConsoleRunner\tools\nunit3-console.exe AutoNumber.Tests\bin\Release\AutoNumber.Tests.dll --where "cat != Live" --result=TestResult.xml
+
+      - name: Build solution artifacts (managed + unmanaged)
+        shell: pwsh
+        run: |
+          ./scripts/Build-SolutionArtifacts.ps1 `
+            -Version "${{ steps.ver.outputs.version }}" `
+            -AssemblyPath "AutoNumber\bin\Release\Celedon.AutoNumber.dll" `
+            -OutputDir "artifacts"
+
+      - name: Upload solution artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: solution-zips-${{ steps.ver.outputs.version }}
+          path: artifacts/*.zip
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $notes = @"
+          Celedon AutoNumber solution **${{ steps.ver.outputs.version_label }}** (build ${{ github.run_number }}).
+
+          Solution version stamped into the zips: ``${{ steps.ver.outputs.version }}``.
+
+          | Artifact | Use |
+          |----------|-----|
+          | ``CeledonAutoNumber_*_managed.zip`` | Import into downstream / production environments |
+          | ``CeledonAutoNumber_*.zip`` (unmanaged) | Development environments only |
+          "@
+          gh release create "${{ github.ref_name }}" `
+            (Get-ChildItem artifacts/*.zip | ForEach-Object { $_.FullName }) `
+            --title "${{ steps.ver.outputs.version_label }}" `
+            --notes "$notes"
