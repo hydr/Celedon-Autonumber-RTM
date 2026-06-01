@@ -75,6 +75,17 @@ jobs:
           "DATAVERSE_TOKEN=$token" | Out-File -FilePath $env:GITHUB_ENV -Append
           "DATAVERSE_URL=$url"     | Out-File -FilePath $env:GITHUB_ENV -Append
 
+      - name: Deploy plugin assembly to Dataverse
+        shell: pwsh
+        # Push the freshly built assembly so the org runs the code under test
+        # (the live tests assert on this build's behaviour, not whatever was
+        # previously deployed).  Uses the OIDC token acquired above — no secrets.
+        run: |
+          ./scripts/Deploy-PluginAssembly.ps1 `
+            -AssemblyPath "AutoNumber\bin\Release\Celedon.AutoNumber.dll" `
+            -CrmUrl $env:DATAVERSE_URL `
+            -AccessToken $env:DATAVERSE_TOKEN
+
       - name: Run live tests
         id: test_run
         continue-on-error: true

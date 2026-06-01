@@ -22,9 +22,12 @@ registration with a Federated Credential. No client secret is stored anywhere.
 
 ### Prerequisites
 
-- A Dataverse environment with the AutoNumber managed solution **already
-  deployed**. The live tests exercise the deployed plugins; they don't deploy
-  them.
+- A Dataverse environment with the AutoNumber solution **already imported**
+  (managed or unmanaged). This registers the `cel_autonumber` entity and the
+  `CreateAutoNumber` / `DeleteAutoNumber` plugin steps. The `live-tests`
+  workflow then **redeploys the freshly built `Celedon.AutoNumber` assembly**
+  (`scripts/Deploy-PluginAssembly.ps1`) so the org runs exactly the code under
+  test — you don't have to manually repackage the solution per branch.
 - Owner / Application Administrator rights in the Azure AD tenant.
 - System Administrator rights in the Dataverse environment.
 - Repo Admin rights to set repository Variables and create Environments.
@@ -81,11 +84,15 @@ Recommended:
    - Read / Create / Write / Delete on `cel_autonumber`
    - Read / Create / Write / Delete on `account`
    - Read on `sdkmessageprocessingstep`, `sdkmessageprocessingstepimage`,
-     `sdkmessage`, `sdkmessagefilter`, `plugintype`
+     `sdkmessage`, `sdkmessagefilter`
+   - **Create / Write on `pluginassembly` and `plugintype`** — the workflow
+     redeploys the built assembly via `scripts/Deploy-PluginAssembly.ps1`.
 
-   The built-in **System Customizer** role plus Account read/create privileges
-   is the easiest catch-all. For a hardened setup, create a dedicated security
-   role.
+   The built-in **System Administrator** role is the simplest catch-all (plugin
+   assembly registration needs the ISV-extension privileges it grants).
+   **System Customizer** + Account privileges works only if you don't auto-deploy
+   the assembly. For a hardened setup, create a dedicated role with exactly the
+   privileges above.
 
 ### 5. Configure repository variables
 
@@ -118,8 +125,11 @@ The workflow will:
 3. Use `azure/login@v2` with the Federated Credential to obtain an Azure AD token.
 4. Use `az account get-access-token --resource $DATAVERSE_URL` to exchange that
    token for a Dataverse-scoped bearer token.
-5. Run only `[Category("Live")]` NUnit tests against your environment.
-6. Post a summary to the run's job summary, attach `TestResult.xml` as artifact,
+5. Deploy the freshly built `Celedon.AutoNumber` assembly into the org via
+   `scripts/Deploy-PluginAssembly.ps1` (updates the existing registration in
+   place), so the tests run against this build's code.
+6. Run only `[Category("Live")]` NUnit tests against your environment.
+7. Post a summary to the run's job summary, attach `TestResult.xml` as artifact,
    fail the job if any tests failed.
 
 ### Locally
@@ -129,7 +139,11 @@ az login
 $env:DATAVERSE_URL   = "https://orgxxxxxxxx.crm4.dynamics.com"
 $env:DATAVERSE_TOKEN = (az account get-access-token --resource $env:DATAVERSE_URL --query accessToken -o tsv)
 
-# from the repo root, after a Release build:
+# from the repo root, after a Release build — deploy this build's assembly first:
+.\scripts\Deploy-PluginAssembly.ps1 `
+    -AssemblyPath "AutoNumber\bin\Release\Celedon.AutoNumber.dll" `
+    -CrmUrl $env:DATAVERSE_URL -AccessToken $env:DATAVERSE_TOKEN
+
 nunit3-console AutoNumber.Tests\bin\Release\AutoNumber.Tests.dll --where "cat == Live"
 ```
 
