@@ -45,17 +45,15 @@ before tagging.
 
 ## Custom action (cel_GenerateAutoNumber)
 
-The on-demand action message `cel_GenerateAutoNumber` is **not yet baked into the template
-solution zips**. Until it is, create it per environment after import with:
+The on-demand action message `cel_GenerateAutoNumber`, its `GenerateAutoNumberAction`
+plugin step (stage 40, synchronous) and the plugin type are **baked into the template
+solution zips** under `Solutions/`, so importing the solution brings the action with it —
+no per-environment setup needed.
 
-```pwsh
-./scripts/New-GenerateAutoNumberAction.ps1 -EnvUrl $env:DATAVERSE_URL -AccessToken $env:DATAVERSE_TOKEN
-```
-
-The plugin step for `Celedon.GenerateAutoNumberAction` is registered on that message at
-stage 40 (PostOperation, synchronous). To make releases self-contained, author the action
-in a dev environment, add it plus its plugin step to the solution, and re-export the
-template zips under `Solutions/`.
+The templates were produced by exporting the `CeledonAutoNumber` solution from a dev
+environment. To regenerate them after changing solution components, re-export managed +
+unmanaged and overwrite the files under `Solutions/`. `scripts/New-GenerateAutoNumberAction.ps1`
+remains available to (re)create just the action message in an environment if needed.
 
 ## Local build
 
