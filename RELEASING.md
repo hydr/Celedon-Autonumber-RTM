@@ -43,6 +43,20 @@ a base version such as `1.3.0`. This builds and uploads the zips as run
 artifacts **without** creating a tag or a Release — handy for verifying a build
 before tagging.
 
+## Custom action (cel_GenerateAutoNumber)
+
+The on-demand action message `cel_GenerateAutoNumber` is **not yet baked into the template
+solution zips**. Until it is, create it per environment after import with:
+
+```pwsh
+./scripts/New-GenerateAutoNumberAction.ps1 -EnvUrl $env:DATAVERSE_URL -AccessToken $env:DATAVERSE_TOKEN
+```
+
+The plugin step for `Celedon.GenerateAutoNumberAction` is registered on that message at
+stage 40 (PostOperation, synchronous). To make releases self-contained, author the action
+in a dev environment, add it plus its plugin step to the solution, and re-export the
+template zips under `Solutions/`.
+
 ## Local build
 
 ```pwsh
