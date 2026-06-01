@@ -767,7 +767,7 @@ namespace Celedon
 			_harness = new PluginHarness
 			{
 				MessageName = Constants.PipelineMessage.Delete,
-				Stage = Constants.PipelineStage.PreOperation,
+				Stage = Constants.PipelineStage.PostOperation,
 				PrimaryEntityName = "cel_autonumber",
 			};
 		}

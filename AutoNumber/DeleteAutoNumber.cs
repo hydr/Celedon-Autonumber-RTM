@@ -51,7 +51,9 @@ namespace Celedon
 		public DeleteAutoNumber()
 		{
 			//this.RegisteredEvents.Add(new Tuple<int,string,string,Action<LocalPluginContext>>(PostOperation, DELETEMESSAGE, "entityname", new Action<LocalPluginContext>(Execute)));
-			RegisterEvent(Constants.PipelineStage.PreOperation, Constants.PipelineMessage.Delete, "cel_autonumber", Execute);
+			// PostOperation: the deleted record must already be gone so the "remaining records" query
+			// is accurate, and it must match the registered step's stage (40) or Execute never fires.
+			RegisterEvent(Constants.PipelineStage.PostOperation, Constants.PipelineMessage.Delete, "cel_autonumber", Execute);
 		}
 
 		protected void Execute(LocalPluginContext context)

@@ -140,14 +140,16 @@ namespace Celedon
 				targetAttribute: TargetAttr, prefix: "CI-M1-", digits: 4, nextNumber: 1);
 			WaitForStepWithFilter(StepName(updateEvent: true), "name", TargetAttr);
 
+			// Second record uses a distinct text target ("fax") and trigger ("industrycode").
+			// The target must be a String/Memo field — ValidateAutoNumber rejects non-text targets.
 			CreateAutoNumber(eventCode: 1, triggerAttribute: "industrycode",
-				targetAttribute: "accountcategorycode", prefix: "CI-M2-", digits: 4, nextNumber: 1);
+				targetAttribute: "fax", prefix: "CI-M2-", digits: 4, nextNumber: 1);
 
 			var step = WaitForStepWithFilter(StepName(updateEvent: true),
-				"name", TargetAttr, "industrycode", "accountcategorycode");
+				"name", TargetAttr, "industrycode", "fax");
 			var attrs = ParseFilter(step);
 
-			Assert.That(attrs, Is.SupersetOf(new[] { "name", TargetAttr, "industrycode", "accountcategorycode" }),
+			Assert.That(attrs, Is.SupersetOf(new[] { "name", TargetAttr, "industrycode", "fax" }),
 				"Step must merge filtering attributes from both records.");
 		}
 
