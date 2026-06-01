@@ -1,13 +1,18 @@
 # Celedon Partners Dynamics CRM AutoNumber
 Provides auto-numbering to Dynamics CRM.
 
+> **Fork notice** — this is a crossvertise-maintained fork of
+> [Ardalyst/Celedon-Autonumber-RTM](https://github.com/Ardalyst/Celedon-Autonumber-RTM).
+> It adds a GitHub Actions build/test pipeline, live Dataverse integration tests
+> (see [`LiveTests.md`](LiveTests.md)), and a versioned solution release pipeline
+> (see [`RELEASING.md`](RELEASING.md)).
+
 **Build status**
 
-release:
-[![Build Status](https://travis-ci.org/BESDev/Celedon-Autonumber-RTM.svg?branch=release)](https://travis-ci.org/BESDev/Celedon-Autonumber-RTM/branches)
-master:
-[![Build Status](https://travis-ci.org/BESDev/Celedon-Autonumber-RTM.svg?branch=master)](https://travis-ci.org/BESDev/Celedon-Autonumber-RTM/branches)
-dev: [![Build Status](https://travis-ci.org/BESDev/Celedon-Autonumber-RTM.svg?branch=develop)](https://travis-ci.org/BESDev/Celedon-Autonumber-RTM/branches)
+[![build](https://github.com/hydr/Celedon-Autonumber-RTM/actions/workflows/build.yml/badge.svg)](https://github.com/hydr/Celedon-Autonumber-RTM/actions/workflows/build.yml)
+
+Releases are published from `v*` tags — download the managed/unmanaged solution
+zips from the [Releases](https://github.com/hydr/Celedon-Autonumber-RTM/releases) page.
 
 ## How To Build
 The following is required to build AutoNumber:
@@ -16,6 +21,17 @@ The following is required to build AutoNumber:
 * [CRM Developer Toolkit - by Jason Lattimer](https://github.com/jlattimer/CRMDeveloperExtensions)
 
 > The current version builds against the Dynamics CRM 2016 - v6.0 SDK and .Net 4.0. You can [look here](https://blogs.msdn.microsoft.com/crm/2017/02/01/dynamics-365-sdk-backwards-compatibility/) for more information on SDK compatibilities. Since this solution does not connect to CRM Via alternative methods we do not need to update the connectivity support that changed in the later versions of CRM-Online for OAuth support.
+
+## v1.3
+* Update plugin steps are now scoped with `filteringattributes` (trigger attribute,
+  target attribute and conditional optionset), so the pipeline no longer loads the
+  plugin on unrelated attribute changes. Multiple autonumber records on the same
+  entity/event merge their filters into the shared step.
+* Fixed `DeleteAutoNumber`: it was registered for the wrong pipeline stage and never
+  removed the plugin step when the last autonumber record was deleted.
+* Added a GitHub Actions build/test pipeline, live Dataverse integration tests
+  ([`LiveTests.md`](LiveTests.md)) and a managed/unmanaged solution release pipeline
+  ([`RELEASING.md`](RELEASING.md)).
 
 ## v1.2
 > The plugin distributed with this version is *NOT* compatible with previous versions. You can import this Solution over the existing as an upgrade but you will need to convert the existing auto-number steps to the new plug-in in order to maintain support.

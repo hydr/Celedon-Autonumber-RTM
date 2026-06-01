@@ -1,0 +1,82 @@
+name: build
+
+on:
+  push:
+    branches: [main, master, "claude/**"]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Setup NuGet
+        uses: NuGet/setup-nuget@v2
+
+      - name: Restore NuGet packages
+        run: nuget restore AutoNumber.sln
+
+      - name: Build solution (Release)
+        run: msbuild AutoNumber.sln /p:Configuration=Release /p:Platform="Any CPU" /m /nologo /verbosity:minimal
+
+      - name: Install NUnit Console Runner
+        run: nuget install NUnit.ConsoleRunner -Version 3.18.3 -OutputDirectory testrunner -ExcludeVersion
+
+      - name: Run tests
+        id: test_run
+        continue-on-error: true
+        # Skip [Category("Live")] tests — those run in live-tests.yml against a real Dataverse org.
+        run: testrunner\NUnit.ConsoleRunner\tools\nunit3-console.exe AutoNumber.Tests\bin\Release\AutoNumber.Tests.dll --where "cat != Live" --result=TestResult.xml
+
+      - name: Report test results
+        if: always() && github.event_name == 'pull_request'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          $sha = "${{ github.sha }}"
+          $body = "## CI run on $sha (test step outcome: ${{ steps.test_run.outcome }})`n`n"
+          try {
+            if (-not (Test-Path TestResult.xml)) {
+              $body += "No TestResult.xml produced.`n"
+            } else {
+              [xml]$xml = Get-Content TestResult.xml
+              $f = @($xml.SelectNodes("//test-case[@result='Failed']"))
+              $p = @($xml.SelectNodes("//test-case[@result='Passed']"))
+              $s = @($xml.SelectNodes("//test-case[@result='Skipped']"))
+              $body += "Passed: $($p.Count) | Failed: $($f.Count) | Skipped: $($s.Count)`n`n"
+              foreach ($t in $f) {
+                $name = $t.fullname
+                $msgNode = $t.SelectSingleNode('failure/message')
+                $stkNode = $t.SelectSingleNode('failure/stack-trace')
+                $msg = if ($msgNode) { $msgNode.InnerText.Trim() } else { '(no message)' }
+                $stk = if ($stkNode) { $stkNode.InnerText.Trim() } else { '(no stack trace)' }
+                $fence = '```'
+                $body += "<details><summary>$name</summary>`n`n$fence`n$msg`n`n$stk`n$fence`n`n</details>`n`n"
+              }
+            }
+          } catch {
+            $body += "Parser error: $_`n"
+          }
+          $body | Out-File -FilePath comment.md -Encoding utf8
+          gh pr comment $env:PR_NUMBER --body-file comment.md
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: TestResult.xml
+
+      - name: Fail job if tests failed
+        if: steps.test_run.outcome == 'failure'
+        run: exit 1

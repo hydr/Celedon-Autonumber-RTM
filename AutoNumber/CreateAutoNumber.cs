@@ -24,6 +24,7 @@ SOFTWARE.
 // Generates a plugin step for an entity, when a new autonumber record is created
 
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using Microsoft.Xrm.Sdk;
 using Celedon.Constants;
@@ -57,15 +58,41 @@ namespace Celedon
 			var target = context.GetInputParameters<CreateInputParameters>().Target;
 			var pluginName = string.Format(PluginName, target.GetAttributeValue<string>("cel_entityname"));
 
-			if (target.GetAttributeValue<OptionSetValue>("cel_triggerevent").Value == 1)
+			var isUpdate = target.GetAttributeValue<OptionSetValue>("cel_triggerevent").Value == 1;
+			if (isUpdate)
 			{
 				pluginName += " Update";
 			}
 
+			var filterAttrs = BuildFilterAttributes(target);
+
 		    context.Trace("Check for existing plugin step");
-			if (context.OrganizationDataContext.CreateQuery("sdkmessageprocessingstep").Where(s => s.GetAttributeValue<string>("name").Equals(pluginName)).ToList().Any())
+			var existingStep = context.OrganizationDataContext.CreateQuery("sdkmessageprocessingstep")
+				.Where(s => s.GetAttributeValue<string>("name").Equals(pluginName))
+				.Select(s => new { Id = s.GetAttributeValue<Guid>("sdkmessageprocessingstepid"),
+								   Filter = s.GetAttributeValue<string>("filteringattributes") })
+				.ToList()
+				.FirstOrDefault();
+
+			if (existingStep != null)
 			{
-				return;  // Step already exists, nothing to do here.
+				if (!isUpdate)
+				{
+					return;  // Create-Step has no filtering attributes to merge.
+				}
+
+				var merged = new HashSet<string>(
+					(existingStep.Filter ?? string.Empty).Split(',').Select(a => a.Trim()),
+					StringComparer.OrdinalIgnoreCase);
+				merged.UnionWith(filterAttrs);
+				merged.RemoveWhere(string.IsNullOrWhiteSpace);
+
+				context.Trace("Merge filteringattributes into existing plugin step");
+				context.OrganizationService.Update(new Entity("sdkmessageprocessingstep", existingStep.Id)
+				{
+					["filteringattributes"] = string.Join(",", merged)
+				});
+				return;
 			}
 
 		    context.Trace("Build the configuration");
@@ -95,27 +122,33 @@ namespace Celedon
 														   .First();
 
 		    context.Trace("Build new plugin step");
-			var newPluginStep = new Entity("sdkmessageprocessingstep")
+			var stepAttributes = new AttributeCollection()
 			{
-				Attributes = new AttributeCollection()
-				{
-					{ "name", pluginName },
-					{ "description", pluginName },
-					{ "plugintypeid", pluginTypeId.ToEntityReference("plugintype") },  // This plugin type
-					{ "sdkmessageid", messageId.ToEntityReference("sdkmessage") },  // Create or Update Message
-					{ "configuration", config.ToJson() },  // EntityName and RegisteredEvent in the UnsecureConfig
-					{ "stage", PipelineStage.PreOperation.ToOptionSetValue() },  // Execution Stage: Pre-Operation
-					{ "rank", 1 },
-					{ "impersonatinguserid", context.PluginExecutionContext.UserId.ToEntityReference("systemuser") },  // Run as SYSTEM user. Assumes we are currently running as the SYSTEM user
-					{ "sdkmessagefilterid", filterId.ToEntityReference("sdkmessagefilter") },
-				}
+				{ "name", pluginName },
+				{ "description", pluginName },
+				{ "plugintypeid", pluginTypeId.ToEntityReference("plugintype") },  // This plugin type
+				{ "sdkmessageid", messageId.ToEntityReference("sdkmessage") },  // Create or Update Message
+				{ "configuration", config.ToJson() },  // EntityName and RegisteredEvent in the UnsecureConfig
+				{ "stage", PipelineStage.PreOperation.ToOptionSetValue() },  // Execution Stage: Pre-Operation
+				{ "rank", 1 },
+				{ "impersonatinguserid", context.PluginExecutionContext.UserId.ToEntityReference("systemuser") },  // Run as SYSTEM user. Assumes we are currently running as the SYSTEM user
+				{ "sdkmessagefilterid", filterId.ToEntityReference("sdkmessagefilter") },
 			};
+
+			if (isUpdate && filterAttrs.Count > 0)
+			{
+				// Scope the Update step to changes that the runtime checks in GetNextAutoNumber.Execute actually inspect,
+				// so the pipeline does not load the plugin on unrelated attribute changes.
+				stepAttributes.Add("filteringattributes", string.Join(",", filterAttrs));
+			}
+
+			var newPluginStep = new Entity("sdkmessageprocessingstep") { Attributes = stepAttributes };
 
 		    context.Trace("Create new plugin step");
 		    var sdkmessageprocessingstepid = context.OrganizationService.Create(newPluginStep);
 
             // only add the image if the type is update, on create a value cannot be overridden
-		    if (target.GetAttributeValue<OptionSetValue>("cel_triggerevent").Value == 1)
+		    if (isUpdate)
 		    {
 		        context.Trace("Build new plugin step image");
 		        var newPluginStepImage = new Entity("sdkmessageprocessingstepimage")
@@ -134,6 +167,31 @@ namespace Celedon
 		        context.Trace("Create new plugin step image");
 		        context.OrganizationService.Create(newPluginStepImage);
 		    }
+		}
+
+		internal static HashSet<string> BuildFilterAttributes(Entity autoNumberRecord)
+		{
+			var attrs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+			var trigger = autoNumberRecord.GetAttributeValue<string>("cel_triggerattribute");
+			if (!string.IsNullOrWhiteSpace(trigger))
+			{
+				attrs.Add(trigger);
+			}
+
+			var targetAttr = autoNumberRecord.GetAttributeValue<string>("cel_attributename");
+			if (!string.IsNullOrWhiteSpace(targetAttr))
+			{
+				attrs.Add(targetAttr);
+			}
+
+			var conditional = autoNumberRecord.GetAttributeValue<string>("cel_conditionaloptionset");
+			if (!string.IsNullOrWhiteSpace(conditional))
+			{
+				attrs.Add(conditional);
+			}
+
+			return attrs;
 		}
 	}
 }
