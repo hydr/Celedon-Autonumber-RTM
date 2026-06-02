@@ -216,6 +216,48 @@ namespace Celedon
 				"The generated number must be written onto the target field.");
 		}
 
+		[Test]
+		public void CreateMultiple_assigns_unique_sequential_numbers_to_the_whole_batch()
+		{
+			const int n = 25;
+			var configId = CreateAutoNumber(eventCode: 0, triggerAttribute: null,
+				targetAttribute: TargetAttr, prefix: "CI-BULK-", digits: 5, nextNumber: 1);
+
+			// The bulk step is registered alongside the single step by CreateAutoNumber.
+			WaitForStep(StepName(updateEvent: false) + " (CreateMultiple)");
+
+			var targets = new EntityCollection { EntityName = TargetEntity };
+			for (var i = 0; i < n; i++)
+			{
+				targets.Entities.Add(new Entity(TargetEntity) { ["name"] = "ci-bulk-" + Guid.NewGuid() });
+			}
+
+			var req = new OrganizationRequest("CreateMultiple") { ["Targets"] = targets };
+			var ids = (Guid[])_client.Execute(req).Results["Ids"];
+			foreach (var id in ids)
+			{
+				_toCleanup.Add(new EntityReference(TargetEntity, id));
+			}
+
+			Assert.That(ids.Length, Is.EqualTo(n));
+
+			var numbers = ids
+				.Select(id => _client.Retrieve(TargetEntity, id, new ColumnSet(TargetAttr)).GetAttributeValue<string>(TargetAttr))
+				.ToList();
+
+			Assert.That(numbers.All(x => !string.IsNullOrEmpty(x) && x.StartsWith("CI-BULK-") && x.Length == "CI-BULK-".Length + 5),
+				Is.True, "Every record in the batch must receive a formatted number.");
+			Assert.That(numbers.Distinct(StringComparer.OrdinalIgnoreCase).Count(), Is.EqualTo(n),
+				"All numbers in the batch must be unique (no duplicates, no fan-out double-assignment).");
+
+			// The counter must advance by exactly the batch size — proving the single-record step did
+			// NOT also fan out for this CreateMultiple (which would advance it by 2N).
+			var nextNumber = _client.Retrieve("cel_autonumber", configId, new ColumnSet("cel_nextnumber"))
+				.GetAttributeValue<int>("cel_nextnumber");
+			Assert.That(nextNumber, Is.EqualTo(1 + n),
+				"cel_nextnumber must advance by exactly the batch size (single increment, no fan-out duplication).");
+		}
+
 		#endregion
 
 		#region Helpers
