@@ -28,7 +28,9 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $false)] [string]$EnvUrl = $env:DATAVERSE_URL,
-    [Parameter(Mandatory = $false)] [string]$AccessToken
+    [Parameter(Mandatory = $false)] [string]$AccessToken,
+    # Report what would change without writing anything (read-only).
+    [Parameter(Mandatory = $false)] [switch]$DryRun
 )
 
 $ErrorActionPreference = 'Stop'
@@ -86,8 +88,13 @@ foreach ($c in $configs.value) {
         if ($isUpdate) {
             $have = @(); if ($existing.value[0].filteringattributes) { $have = $existing.value[0].filteringattributes.Split(',') | ForEach-Object { $_.Trim() } }
             $union = ($have + $filterAttrs | Where-Object { $_ } | Select-Object -Unique)
-            Dv-Patch 'sdkmessageprocessingsteps' $existing.value[0].sdkmessageprocessingstepid @{ filteringattributes = ($union -join ',') }
-            Write-Host "  [~] exists; merged filtering attributes" -ForegroundColor Yellow; $merged++
+            if ($DryRun) {
+                Write-Host ("  [~] would merge filtering attributes -> {0}" -f ($union -join ',')) -ForegroundColor Cyan
+            } else {
+                Dv-Patch 'sdkmessageprocessingsteps' $existing.value[0].sdkmessageprocessingstepid @{ filteringattributes = ($union -join ',') }
+                Write-Host "  [~] exists; merged filtering attributes" -ForegroundColor Yellow
+            }
+            $merged++
         } else {
             Write-Host "  [=] exists; skipped" -ForegroundColor Yellow; $skipped++
         }
@@ -115,6 +122,13 @@ foreach ($c in $configs.value) {
         'sdkmessagefilterid@odata.bind' = "/sdkmessagefilters($filterId)"
     }
     if ($isUpdate -and $filterAttrs.Count -gt 0) { $step['filteringattributes'] = ($filterAttrs -join ',') }
+
+    if ($DryRun) {
+        $imgNote = if ($isUpdate) { " + PreImage(Targets attributes='$targetAttr')" } else { "" }
+        Write-Host ("  [+] WOULD create step '{0}' (stage 20, filter='{1}'){2}" -f $stepName, ($filterAttrs -join ','), $imgNote) -ForegroundColor Cyan
+        $created++
+        continue
+    }
 
     $resp = Dv-Post 'sdkmessageprocessingsteps' $step
     $stepId = $resp.sdkmessageprocessingstepid
