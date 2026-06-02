@@ -103,6 +103,34 @@ numbers stay unique.
 > The action message must exist in the environment. Create it with
 > `scripts/New-GenerateAutoNumberAction.ps1` (or import a solution that contains it).
 
+## Bulk operations (CreateMultiple / UpdateMultiple)
+
+AutoNumber is optimized for bulk APIs. When many records are created/updated in a single
+`CreateMultiple` / `UpdateMultiple` request (e.g. 100 rows from a data import or
+`ExecuteMultiple`), the plugin processes the **whole batch in one invocation**: it locks the
+`cel_autonumber` counter once, reserves a contiguous block of numbers, assigns them in memory,
+and increments the counter a single time. This avoids the per-record lock/increment round-trips
+(and the lock contention on the shared counter row) that a fan-out to the single-record plugin
+would cause.
+
+This is automatic — newly created `cel_autonumber` configurations register the bulk step
+alongside the single-record step. Records that already hold a value are still skipped, and the
+counter only advances by the number of records actually assigned.
+
+### Step lifecycle & migrating existing configs
+
+Any **update of an active** `cel_autonumber` now (re)registers its single + bulk steps
+idempotently, and **deactivating** one removes its steps (so an inactive config carries no pipeline
+cost). The simplest way to bring a configuration that predates this version onto the current layout
+is therefore to just **re-save it** — the bulk step is added and any existing filtering is preserved
+(merged, never duplicated). The config stays active throughout, so there is no numbering gap.
+(Counter writes during number generation — `cel_preview`/`cel_nextnumber` — are ignored, so this
+does not fire on every number.)
+
+To migrate many existing configs at once, run `scripts/Migrate-AutoNumberConfigs.ps1` against the
+environment. It triggers one harmless update (re-save) per active config, letting the plugin do the
+migration; use `-DryRun` first to preview which configs it would touch (read-only).
+
 ## FAQ
 
 **Q**: Does the current version work with Lookups?  **A: No. This has been logged as a future enhancement**

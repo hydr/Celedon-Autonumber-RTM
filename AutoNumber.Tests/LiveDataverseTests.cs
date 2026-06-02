@@ -216,6 +216,93 @@ namespace Celedon
 				"The generated number must be written onto the target field.");
 		}
 
+		[Test]
+		public void CreateMultiple_assigns_unique_sequential_numbers_to_the_whole_batch()
+		{
+			const int n = 25;
+			var configId = CreateAutoNumber(eventCode: 0, triggerAttribute: null,
+				targetAttribute: TargetAttr, prefix: "CI-BULK-", digits: 5, nextNumber: 1);
+
+			// The bulk step is registered alongside the single step by CreateAutoNumber.
+			WaitForStep(StepName(updateEvent: false) + " (CreateMultiple)");
+
+			var targets = new EntityCollection { EntityName = TargetEntity };
+			for (var i = 0; i < n; i++)
+			{
+				targets.Entities.Add(new Entity(TargetEntity) { ["name"] = "ci-bulk-" + Guid.NewGuid() });
+			}
+
+			var req = new OrganizationRequest("CreateMultiple") { ["Targets"] = targets };
+			var ids = (Guid[])_client.Execute(req).Results["Ids"];
+			foreach (var id in ids)
+			{
+				_toCleanup.Add(new EntityReference(TargetEntity, id));
+			}
+
+			Assert.That(ids.Length, Is.EqualTo(n));
+
+			var numbers = ids
+				.Select(id => _client.Retrieve(TargetEntity, id, new ColumnSet(TargetAttr)).GetAttributeValue<string>(TargetAttr))
+				.ToList();
+
+			Assert.That(numbers.All(x => !string.IsNullOrEmpty(x) && x.StartsWith("CI-BULK-") && x.Length == "CI-BULK-".Length + 5),
+				Is.True, "Every record in the batch must receive a formatted number.");
+			Assert.That(numbers.Distinct(StringComparer.OrdinalIgnoreCase).Count(), Is.EqualTo(n),
+				"All numbers in the batch must be unique (no duplicates, no fan-out double-assignment).");
+
+			// The counter must advance by exactly the batch size — proving the single-record step did
+			// NOT also fan out for this CreateMultiple (which would advance it by 2N).
+			var nextNumber = _client.Retrieve("cel_autonumber", configId, new ColumnSet("cel_nextnumber"))
+				.GetAttributeValue<int>("cel_nextnumber");
+			Assert.That(nextNumber, Is.EqualTo(1 + n),
+				"cel_nextnumber must advance by exactly the batch size (single increment, no fan-out duplication).");
+		}
+
+		[Test]
+		public void Deactivating_config_removes_steps_and_reactivating_restores_them()
+		{
+			var singleStep = StepName(updateEvent: false);
+			var bulkStep = singleStep + " (CreateMultiple)";
+
+			var configId = CreateAutoNumber(eventCode: 0, triggerAttribute: null,
+				targetAttribute: TargetAttr, prefix: "CI-LC-", digits: 4, nextNumber: 1);
+
+			WaitForStep(singleStep);
+			WaitForStep(bulkStep);
+
+			// Deactivate -> UpdateAutoNumber removes both steps.
+			_client.Update(new Entity("cel_autonumber") { Id = configId, ["statecode"] = new OptionSetValue(1), ["statuscode"] = new OptionSetValue(2) });
+			Assert.That(WaitForStepRemoval(singleStep), Is.True, "Single step must be removed on deactivate.");
+			Assert.That(WaitForStepRemoval(bulkStep), Is.True, "Bulk step must be removed on deactivate.");
+
+			// Reactivate -> steps are registered again (single + bulk).
+			_client.Update(new Entity("cel_autonumber") { Id = configId, ["statecode"] = new OptionSetValue(0), ["statuscode"] = new OptionSetValue(1) });
+			Assert.That(WaitForStep(singleStep), Is.Not.Null, "Single step must be restored on reactivate.");
+			Assert.That(WaitForStep(bulkStep), Is.Not.Null, "Bulk step must be restored on reactivate.");
+		}
+
+		[Test]
+		public void Plain_update_migrates_config_by_re_adding_missing_bulk_step()
+		{
+			var singleStep = StepName(updateEvent: false);
+			var bulkStep = singleStep + " (CreateMultiple)";
+
+			var configId = CreateAutoNumber(eventCode: 0, triggerAttribute: null,
+				targetAttribute: TargetAttr, prefix: "CI-MIG-", digits: 4, nextNumber: 1);
+			WaitForStep(singleStep);
+			WaitForStep(bulkStep);
+
+			// Simulate an "old" config from before the bulk feature: drop the bulk step.
+			var bulk = QueryStep(bulkStep);
+			_client.Delete("sdkmessageprocessingstep", bulk.Id);
+			Assert.That(WaitForStepRemoval(bulkStep), Is.True);
+
+			// A single plain update (no status change) must re-register the missing bulk step.
+			_client.Update(new Entity("cel_autonumber") { Id = configId, ["cel_attributename"] = TargetAttr });
+			Assert.That(WaitForStep(bulkStep), Is.Not.Null,
+				"A plain update of an active config must re-add the bulk step (migration without deactivate/reactivate).");
+		}
+
 		#endregion
 
 		#region Helpers
