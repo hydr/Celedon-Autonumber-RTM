@@ -56,11 +56,19 @@ namespace Celedon
 		{
 		    context.Trace("Get Target record");
 			var target = context.GetInputParameters<CreateInputParameters>().Target;
-			var entityName = target.GetAttributeValue<string>("cel_entityname");
-			var isUpdate = target.GetAttributeValue<OptionSetValue>("cel_triggerevent").Value == 1;
+			RegisterSteps(context, target);
+		}
+
+		// Registers (or merges) both the single-record step and the bulk (*Multiple) step for the given
+		// cel_autonumber config.  Reused by CreateAutoNumber (on create) and UpdateAutoNumber (on reactivate).
+		// Idempotent: an existing step is merged (Update) or left alone (Create), never duplicated.
+		internal static void RegisterSteps(LocalPluginContext context, Entity config)
+		{
+			var entityName = config.GetAttributeValue<string>("cel_entityname");
+			var isUpdate = config.GetAttributeValue<OptionSetValue>("cel_triggerevent").Value == 1;
 			var eventName = isUpdate ? PipelineMessage.Update : PipelineMessage.Create;
-			var targetAttribute = target.GetAttributeValue<string>("cel_attributename");
-			var filterAttrs = BuildFilterAttributes(target);
+			var targetAttribute = config.GetAttributeValue<string>("cel_attributename");
+			var filterAttrs = BuildFilterAttributes(config);
 
 		    context.Trace("Get the Id of this plugin");
 		    var pluginTypeId = context.OrganizationDataContext.CreateQuery("plugintype")
@@ -88,7 +96,7 @@ namespace Celedon
 			return name;
 		}
 
-		private void RegisterOrMergeStep(LocalPluginContext context, string entityName, string messageName,
+		private static void RegisterOrMergeStep(LocalPluginContext context, string entityName, string messageName,
 			string stepName, bool isUpdate, string targetAttribute, HashSet<string> filterAttrs, Guid pluginTypeId, bool required)
 		{
 			context.Trace("Check for existing plugin step: " + stepName);

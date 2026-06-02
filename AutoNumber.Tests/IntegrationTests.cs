@@ -1409,4 +1409,245 @@ namespace Celedon
 	}
 
 	#endregion
+
+	#region UpdateAutoNumber — lifecycle coupling & migration
+
+	[TestFixture]
+	public class UpdateAutoNumberTests
+	{
+		private const string EntityName = "account";
+		private const string TargetAttr = "accountnumber";
+		private const string TriggerAttr = "name";
+
+		private PluginHarness _harness;
+
+		[SetUp]
+		public void SetUp()
+		{
+			_harness = new PluginHarness
+			{
+				MessageName = Constants.PipelineMessage.Update,
+				Stage = Constants.PipelineStage.PostOperation,
+				PrimaryEntityName = "cel_autonumber",
+			};
+
+			// Metadata needed by the reactivate path (CreateAutoNumber.RegisterSteps).
+			var pluginTypeId = Guid.NewGuid();
+			_harness.Service.Seed("plugintype", pluginTypeId,
+				"name", typeof(GetNextAutoNumber).FullName, "plugintypeid", pluginTypeId);
+			foreach (var msg in new[] { "Create", "Update", "CreateMultiple", "UpdateMultiple" })
+			{
+				SeedMessage(msg);
+			}
+		}
+
+		private void SeedMessage(string messageName)
+		{
+			var msgId = Guid.NewGuid();
+			var filterId = Guid.NewGuid();
+			_harness.Service.Seed("sdkmessage", msgId, "name", messageName, "sdkmessageid", msgId);
+			_harness.Service.Seed("sdkmessagefilter", filterId,
+				"primaryobjecttypecode", EntityName,
+				"sdkmessageid", new EntityReference("sdkmessage", msgId),
+				"sdkmessagefilterid", filterId);
+		}
+
+		private Entity Config(int triggerEvent, string targetAttr = TargetAttr, string triggerAttr = null, string conditional = null)
+		{
+			var id = Guid.NewGuid();
+			var e = new Entity("cel_autonumber") { Id = id };
+			e["cel_autonumberid"] = id;
+			e["cel_entityname"] = EntityName;
+			e["cel_attributename"] = targetAttr;
+			e["cel_triggerevent"] = new OptionSetValue(triggerEvent);
+			if (triggerAttr != null) e["cel_triggerattribute"] = triggerAttr;
+			if (conditional != null) e["cel_conditionaloptionset"] = conditional;
+			return e;
+		}
+
+		// Seeds an active cel_autonumber record in the store (used to verify the "others remain" branch).
+		private void SeedActiveConfigRecord(int triggerEvent, string targetAttr, string triggerAttr = null, string conditional = null)
+		{
+			var id = Guid.NewGuid();
+			var attrs = new List<object>
+			{
+				"cel_autonumberid", id,
+				"cel_entityname", EntityName,
+				"cel_attributename", targetAttr,
+				"cel_triggerevent", new OptionSetValue(triggerEvent),
+				"statecode", new OptionSetValue(0),
+			};
+			if (triggerAttr != null) { attrs.Add("cel_triggerattribute"); attrs.Add(triggerAttr); }
+			if (conditional != null) { attrs.Add("cel_conditionaloptionset"); attrs.Add(conditional); }
+			_harness.Service.Seed("cel_autonumber", id, attrs.ToArray());
+		}
+
+		private Guid SeedStep(string name, string filteringAttributes = null)
+		{
+			var id = Guid.NewGuid();
+			var attrs = new List<object> { "sdkmessageprocessingstepid", id, "name", name };
+			if (filteringAttributes != null) { attrs.Add("filteringattributes"); attrs.Add(filteringAttributes); }
+			_harness.Service.Seed("sdkmessageprocessingstep", id, attrs.ToArray());
+			return id;
+		}
+
+		private void Run(Entity config, int newStatecode)
+		{
+			_harness.PreEntityImages["Image"] = config;
+			_harness.InputParameters["Target"] = new Entity("cel_autonumber")
+			{
+				Id = config.Id,
+				["statecode"] = new OptionSetValue(newStatecode)
+			};
+			new UpdateAutoNumber().Execute(_harness.Build());
+		}
+
+		private List<string> StepNames()
+		{
+			return _harness.Service.AllOf("sdkmessageprocessingstep")
+				.Select(s => s.GetAttributeValue<string>("name")).ToList();
+		}
+
+		// ---- Reactivate ----
+
+		[Test]
+		public void Reactivate_create_config_registers_single_and_bulk_steps()
+		{
+			Run(Config(triggerEvent: 0), newStatecode: 0);
+
+			Assert.That(StepNames(), Is.EquivalentTo(new[]
+			{
+				"CeledonPartners.AutoNumber.account",
+				"CeledonPartners.AutoNumber.account (CreateMultiple)"
+			}));
+		}
+
+		[Test]
+		public void Reactivate_update_config_registers_single_and_bulk_with_filter()
+		{
+			Run(Config(triggerEvent: 1, triggerAttr: TriggerAttr), newStatecode: 0);
+
+			var steps = _harness.Service.AllOf("sdkmessageprocessingstep").ToList();
+			Assert.That(steps.Select(s => s.GetAttributeValue<string>("name")), Is.EquivalentTo(new[]
+			{
+				"CeledonPartners.AutoNumber.account Update",
+				"CeledonPartners.AutoNumber.account Update (UpdateMultiple)"
+			}));
+			foreach (var step in steps)
+			{
+				var filter = step.GetAttributeValue<string>("filteringattributes").Split(',').Select(a => a.Trim());
+				Assert.That(filter, Is.EquivalentTo(new[] { TriggerAttr, TargetAttr }));
+			}
+		}
+
+		[Test]
+		public void Reactivate_migrates_old_single_only_config_by_adding_bulk_step()
+		{
+			// An "old" config from before the bulk feature: only the single step exists.
+			SeedStep("CeledonPartners.AutoNumber.account");
+
+			Run(Config(triggerEvent: 0), newStatecode: 0);
+
+			Assert.That(StepNames(), Is.EquivalentTo(new[]
+			{
+				"CeledonPartners.AutoNumber.account",                  // untouched (no duplicate)
+				"CeledonPartners.AutoNumber.account (CreateMultiple)"  // added by the migration
+			}), "Reactivating an old single-only config must add the bulk step without duplicating the single one.");
+		}
+
+		[Test]
+		public void Reactivate_update_migration_merges_filter_and_adds_bulk()
+		{
+			// Old single Update step with a hand-set filter that differs from the config's attributes.
+			SeedStep("CeledonPartners.AutoNumber.account Update", "legacyfield");
+
+			Run(Config(triggerEvent: 1, triggerAttr: TriggerAttr), newStatecode: 0);
+
+			var single = _harness.Service.AllOf("sdkmessageprocessingstep")
+				.Single(s => s.GetAttributeValue<string>("name") == "CeledonPartners.AutoNumber.account Update");
+			Assert.That(single.GetAttributeValue<string>("filteringattributes").Split(',').Select(a => a.Trim()),
+				Is.EquivalentTo(new[] { "legacyfield", TriggerAttr, TargetAttr }),
+				"Existing filter attributes must be preserved (merged), not clobbered.");
+			Assert.That(StepNames(), Contains.Item("CeledonPartners.AutoNumber.account Update (UpdateMultiple)"));
+		}
+
+		// ---- Deactivate ----
+
+		[Test]
+		public void Deactivate_removes_single_and_bulk_steps_when_no_other_active_config()
+		{
+			SeedStep("CeledonPartners.AutoNumber.account");
+			SeedStep("CeledonPartners.AutoNumber.account (CreateMultiple)");
+
+			Run(Config(triggerEvent: 0), newStatecode: 1);
+
+			Assert.That(_harness.Service.AllOf("sdkmessageprocessingstep"), Is.Empty,
+				"Deactivating the last config must remove both steps so the pipeline carries no cost.");
+		}
+
+		[Test]
+		public void Deactivate_recomputes_filter_when_another_active_update_config_remains()
+		{
+			SeedStep("CeledonPartners.AutoNumber.account Update", "name,accountnumber,industrycode,accountcategorycode");
+			SeedStep("CeledonPartners.AutoNumber.account Update (UpdateMultiple)", "name,accountnumber,industrycode,accountcategorycode");
+			SeedActiveConfigRecord(triggerEvent: 1, targetAttr: "accountcategorycode", triggerAttr: "industrycode");
+
+			Run(Config(triggerEvent: 1, triggerAttr: TriggerAttr), newStatecode: 1);
+
+			var steps = _harness.Service.AllOf("sdkmessageprocessingstep").ToList();
+			Assert.That(steps.Count, Is.EqualTo(2), "Steps must remain because another active config still uses them.");
+			foreach (var step in steps)
+			{
+				Assert.That(step.GetAttributeValue<string>("filteringattributes").Split(',').Select(a => a.Trim()),
+					Is.EquivalentTo(new[] { "industrycode", "accountcategorycode" }),
+					"Filter must be recomputed to only the remaining active config's attributes.");
+			}
+		}
+
+		[Test]
+		public void Deactivate_update_with_no_other_active_config_deletes_both_steps()
+		{
+			SeedStep("CeledonPartners.AutoNumber.account Update", "name,accountnumber");
+			SeedStep("CeledonPartners.AutoNumber.account Update (UpdateMultiple)", "name,accountnumber");
+
+			Run(Config(triggerEvent: 1, triggerAttr: TriggerAttr), newStatecode: 1);
+
+			Assert.That(_harness.Service.AllOf("sdkmessageprocessingstep"), Is.Empty);
+		}
+
+		[Test]
+		public void Deactivate_ignores_a_remaining_config_of_the_other_event()
+		{
+			// Step is for the Create event; the only other active config is for the Update event -> must NOT keep the Create steps.
+			SeedStep("CeledonPartners.AutoNumber.account");
+			SeedStep("CeledonPartners.AutoNumber.account (CreateMultiple)");
+			SeedActiveConfigRecord(triggerEvent: 1, targetAttr: "accountnumber", triggerAttr: "name");
+
+			Run(Config(triggerEvent: 0), newStatecode: 1);
+
+			Assert.That(_harness.Service.AllOf("sdkmessageprocessingstep"), Is.Empty,
+				"A remaining config for the OTHER event must not keep this event's steps alive.");
+		}
+
+		// ---- Guard ----
+
+		[Test]
+		public void Update_without_statecode_change_is_ignored()
+		{
+			SeedStep("CeledonPartners.AutoNumber.account");
+
+			_harness.PreEntityImages["Image"] = Config(triggerEvent: 0);
+			_harness.InputParameters["Target"] = new Entity("cel_autonumber")
+			{
+				Id = Guid.NewGuid(),
+				["cel_prefix"] = "changed"  // a non-status field changed
+			};
+			new UpdateAutoNumber().Execute(_harness.Build());
+
+			Assert.That(StepNames(), Is.EquivalentTo(new[] { "CeledonPartners.AutoNumber.account" }),
+				"A non-status update must not touch the steps.");
+		}
+	}
+
+	#endregion
 }

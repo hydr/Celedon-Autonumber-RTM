@@ -61,29 +61,49 @@ namespace Celedon
 			var entityName = context.PreImage.GetAttributeValue<string>("cel_entityname");
 			var triggerEvent = context.PreImage.Contains("cel_triggerevent") && context.PreImage.GetAttributeValue<OptionSetValue>("cel_triggerevent").Value == 1 ? 1 : 0;
 			var isUpdate = triggerEvent == 1;
+
+			// Post-Delete: the record is already gone, so "remaining" naturally excludes it.
+			var remainingForEvent = context.OrganizationDataContext.CreateQuery("cel_autonumber")
+																	.Where(s => s.GetAttributeValue<string>("cel_entityname").Equals(entityName))
+																	.Select(s => new {
+																		TriggerEvent = s.Contains("cel_triggerevent") ? s.GetAttributeValue<OptionSetValue>("cel_triggerevent").Value : 0,
+																		TriggerAttribute = s.GetAttributeValue<string>("cel_triggerattribute"),
+																		AttributeName = s.GetAttributeValue<string>("cel_attributename"),
+																		ConditionalOptionSet = s.GetAttributeValue<string>("cel_conditionaloptionset")
+																	})
+																	.ToList()
+																	.Where(s => s.TriggerEvent == triggerEvent)
+																	.Select(s => new ConfigFilterInfo(s.TriggerAttribute, s.AttributeName, s.ConditionalOptionSet))
+																	.ToList();
+
+			RemoveOrRecomputeSteps(context, entityName, isUpdate, remainingForEvent);
+		}
+
+		// Filter-relevant attributes of a cel_autonumber config that remains for an entity/event.
+		internal struct ConfigFilterInfo
+		{
+			public string TriggerAttribute;
+			public string AttributeName;
+			public string ConditionalOptionSet;
+			public ConfigFilterInfo(string trigger, string attribute, string conditional)
+			{
+				TriggerAttribute = trigger; AttributeName = attribute; ConditionalOptionSet = conditional;
+			}
+		}
+
+		// Given the configs that REMAIN for this entity/event, either recompute the steps' filter (Update,
+		// when others remain) or delete both the single and bulk steps (when none remain).  Reused by
+		// DeleteAutoNumber (on delete) and UpdateAutoNumber (on deactivate).
+		internal static void RemoveOrRecomputeSteps(LocalPluginContext context, string entityName, bool isUpdate, System.Collections.Generic.List<ConfigFilterInfo> remainingForEvent)
+		{
 			var eventName = isUpdate ? "Update" : "Create";
-
-			var remainingAutoNumberList = context.OrganizationDataContext.CreateQuery("cel_autonumber")
-																		 .Where(s => s.GetAttributeValue<string>("cel_entityname").Equals(entityName))
-																		 .Select(s => new {
-																			 Id = s.GetAttributeValue<Guid>("cel_autonumberid"),
-																			 TriggerEvent = s.Contains("cel_triggerevent") ? s.GetAttributeValue<OptionSetValue>("cel_triggerevent").Value : 0,
-																			 TriggerAttribute = s.GetAttributeValue<string>("cel_triggerattribute"),
-																			 AttributeName = s.GetAttributeValue<string>("cel_attributename"),
-																			 ConditionalOptionSet = s.GetAttributeValue<string>("cel_conditionaloptionset")
-																		 })
-																		 .ToList();
-
-			// Both the single-record step and the bulk (*Multiple) step share this entity/event.
 			var stepNames = new[]
 			{
 				CreateAutoNumber.StepName(entityName, isUpdate, null),
 				CreateAutoNumber.StepName(entityName, isUpdate, eventName + "Multiple")
 			};
 
-			var remainingForEvent = remainingAutoNumberList.Where(s => s.TriggerEvent == triggerEvent).ToList();
-
-			if (remainingForEvent.Any())  // If there are still other autonumber records on this entity, keep the steps but recompute their filter for Update.
+			if (remainingForEvent.Any())  // Other autonumber records still use these steps — keep them, recompute the Update filter.
 			{
 				if (isUpdate)
 				{
