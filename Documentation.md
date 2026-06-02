@@ -103,6 +103,22 @@ numbers stay unique.
 > The action message must exist in the environment. Create it with
 > `scripts/New-GenerateAutoNumberAction.ps1` (or import a solution that contains it).
 
+## Bulk operations (CreateMultiple / UpdateMultiple)
+
+AutoNumber is optimized for bulk APIs. When many records are created/updated in a single
+`CreateMultiple` / `UpdateMultiple` request (e.g. 100 rows from a data import or
+`ExecuteMultiple`), the plugin processes the **whole batch in one invocation**: it locks the
+`cel_autonumber` counter once, reserves a contiguous block of numbers, assigns them in memory,
+and increments the counter a single time. This avoids the per-record lock/increment round-trips
+(and the lock contention on the shared counter row) that a fan-out to the single-record plugin
+would cause.
+
+This is automatic — newly created `cel_autonumber` configurations register the bulk step
+alongside the single-record step. For configurations that existed **before** this version,
+run the one-time migration `scripts/Register-BulkSteps.ps1` against the environment to add the
+bulk steps. Records that already hold a value are still skipped, and the counter only advances
+by the number of records actually assigned.
+
 ## FAQ
 
 **Q**: Does the current version work with Lookups?  **A: No. This has been logged as a future enhancement**
