@@ -240,7 +240,11 @@ namespace Celedon
             // Lock the config row so only this transaction can read/write the counter.
             service.Update(new Entity("cel_autonumber") { Id = autoNumberConfig.Id, ["cel_preview"] = "555" });
 
-            var nextNumber = autoNumberConfig.GetAttributeValue<int>("cel_nextnumber");
+            // Re-read the counter AFTER acquiring the lock.  The passed config may have been retrieved
+            // BEFORE the lock (the on-demand action retrieves it in ResolveConfig); under READ COMMITTED
+            // SNAPSHOT a pre-lock value could hand the same number to two concurrent callers.
+            var nextNumber = service.Retrieve("cel_autonumber", autoNumberConfig.Id, new ColumnSet("cel_nextnumber"))
+                                    .GetAttributeValue<int>("cel_nextnumber");
             var result = FormatAutoNumber(service, autoNumberConfig, nextNumber, parameterContext);
             tracing?.Trace("Generated autonumber '{0}' from config {1}", result, autoNumberConfig.Id);
 
