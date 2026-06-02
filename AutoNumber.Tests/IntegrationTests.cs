@@ -1056,4 +1056,153 @@ namespace Celedon
 	}
 
 	#endregion
+
+	#region GenerateAutoNumberAction
+
+	[TestFixture]
+	public class GenerateAutoNumberActionTests
+	{
+		private const string EntityName = "account";
+		private const string TargetAttr = "accountnumber";
+
+		private PluginHarness _harness;
+
+		[SetUp]
+		public void SetUp()
+		{
+			_harness = new PluginHarness
+			{
+				MessageName = GenerateAutoNumberAction.MessageName,
+				Stage = Constants.PipelineStage.PostOperation,
+				PrimaryEntityName = "",
+			};
+		}
+
+		private Guid SeedConfig(int nextNumber, int digits, string prefix, string suffix = "",
+			string targetAttr = TargetAttr, int statecode = 0)
+		{
+			var id = Guid.NewGuid();
+			_harness.Service.Seed("cel_autonumber", id,
+				"cel_autonumberid", id,
+				"cel_entityname", EntityName,
+				"cel_attributename", targetAttr,
+				"cel_digits", digits,
+				"cel_prefix", prefix ?? "",
+				"cel_suffix", suffix ?? "",
+				"cel_nextnumber", nextNumber,
+				"statecode", new OptionSetValue(statecode));
+			return id;
+		}
+
+		private Guid SeedAccount(params object[] attrs)
+		{
+			var id = Guid.NewGuid();
+			var list = new List<object> { "accountid", id };
+			list.AddRange(attrs);
+			_harness.Service.Seed(EntityName, id, list.ToArray());
+			return id;
+		}
+
+		private string Run(Guid accountId, Guid? configId = null, string attributeName = null)
+		{
+			_harness.InputParameters.Clear();
+			_harness.OutputParameters.Clear();
+			_harness.InputParameters["TargetEntity"] = EntityName;
+			_harness.InputParameters["TargetId"] = accountId.ToString();
+			if (configId.HasValue)
+			{
+				_harness.InputParameters["AutoNumberConfigId"] = configId.Value.ToString();
+			}
+			if (attributeName != null)
+			{
+				_harness.InputParameters["AttributeName"] = attributeName;
+			}
+
+			new GenerateAutoNumberAction().Execute(_harness.Build());
+			return _harness.OutputParameters.TryGetValue("Number", out var n) ? (string)n : null;
+		}
+
+		[Test]
+		public void Writes_number_to_target_and_increments_counter_via_config_ref()
+		{
+			var configId = SeedConfig(nextNumber: 42, digits: 4, prefix: "ACME-");
+			var accountId = SeedAccount("name", "ACME");
+
+			var number = Run(accountId, configId: configId);
+
+			Assert.That(number, Is.EqualTo("ACME-0042"));
+			Assert.That(_harness.Service.GetStored(EntityName, accountId).GetAttributeValue<string>(TargetAttr),
+				Is.EqualTo("ACME-0042"), "The number must be written onto the target record.");
+			Assert.That(_harness.Service.GetStored("cel_autonumber", configId).GetAttributeValue<int>("cel_nextnumber"),
+				Is.EqualTo(43));
+		}
+
+		[Test]
+		public void Resolves_config_by_entity_and_attribute_fallback()
+		{
+			SeedConfig(nextNumber: 7, digits: 3, prefix: "B-");
+			var accountId = SeedAccount();
+
+			var number = Run(accountId, attributeName: TargetAttr);
+
+			Assert.That(number, Is.EqualTo("B-007"));
+			Assert.That(_harness.Service.GetStored(EntityName, accountId).GetAttributeValue<string>(TargetAttr),
+				Is.EqualTo("B-007"));
+		}
+
+		[Test]
+		public void Does_not_overwrite_existing_value()
+		{
+			var configId = SeedConfig(nextNumber: 5, digits: 3, prefix: "X-");
+			var accountId = SeedAccount(TargetAttr, "MANUAL");
+
+			var number = Run(accountId, configId: configId);
+
+			Assert.That(number, Is.EqualTo("MANUAL"), "Existing value must be returned unchanged.");
+			Assert.That(_harness.Service.GetStored(EntityName, accountId).GetAttributeValue<string>(TargetAttr),
+				Is.EqualTo("MANUAL"));
+			Assert.That(_harness.Service.GetStored("cel_autonumber", configId).GetAttributeValue<int>("cel_nextnumber"),
+				Is.EqualTo(5), "Counter must not increment when nothing was generated.");
+		}
+
+		[Test]
+		public void Resolves_tokens_against_retrieved_record()
+		{
+			var configId = SeedConfig(nextNumber: 42, digits: 4, prefix: "{name}-");
+			var accountId = SeedAccount("name", "ACME");
+
+			var number = Run(accountId, configId: configId);
+
+			Assert.That(number, Is.EqualTo("ACME-0042"));
+		}
+
+		[Test]
+		public void Missing_target_throws()
+		{
+			_harness.InputParameters["AttributeName"] = TargetAttr;
+			Assert.That(() => new GenerateAutoNumberAction().Execute(_harness.Build()),
+				Throws.TypeOf<InvalidPluginExecutionException>().With.Message.Contains("Target"));
+		}
+
+		[Test]
+		public void No_matching_config_throws()
+		{
+			var accountId = SeedAccount();
+			Assert.That(() => Run(accountId, attributeName: "nosuchfield"),
+				Throws.TypeOf<InvalidPluginExecutionException>().With.Message.Contains("no active"));
+		}
+
+		[Test]
+		public void Ambiguous_config_throws_on_fallback()
+		{
+			SeedConfig(nextNumber: 1, digits: 3, prefix: "A-");
+			SeedConfig(nextNumber: 1, digits: 3, prefix: "B-");
+			var accountId = SeedAccount();
+
+			Assert.That(() => Run(accountId, attributeName: TargetAttr),
+				Throws.TypeOf<InvalidPluginExecutionException>().With.Message.Contains("multiple"));
+		}
+	}
+
+	#endregion
 }

@@ -74,6 +74,35 @@ In this example, if the attribute value equals "match1", then the number will us
 * attribute with default and condition: **{attributeName|defaultValue:matchValue?trueValue|falseValue}**
 * attribute with default, format and condition: **{attributeName|defaultValue:formatString:matchValue?trueValue|falseValue}**
 
+## On-demand number generation (cel_GenerateAutoNumber)
+
+Besides firing automatically on Create/Update of the target entity, a number can be
+assigned **on demand** via the global custom action **`cel_GenerateAutoNumber`**. It is
+callable from classic workflows ("Perform Action"), Power Automate ("Perform an unbound
+action"), JavaScript, and plugin/Web-API code.
+
+Inputs (all strings):
+
+| Argument | Required | Meaning |
+|----------|----------|---------|
+| `TargetEntity` | yes | Logical name of the record's entity (e.g. `account`) |
+| `TargetId` | yes | GUID of the record to assign the number to |
+| `AutoNumberConfigId` | no | GUID of a specific `cel_autonumber` definition |
+| `AttributeName` | no | Field name — used to find the config when `AutoNumberConfigId` is omitted |
+
+Output: `Number` (string) — the generated (or already-present) value.
+
+The config is identified by `AutoNumberConfigId` if given, otherwise by
+`TargetEntity` + `AttributeName` (which errors if more than one active config matches —
+pass `AutoNumberConfigId` to disambiguate). The regular trigger condition (conditional
+optionset, status / trigger attribute) is **bypassed**, but an **existing value is never
+overwritten** — in that case the current value is returned unchanged and the counter is
+not advanced. The counter is shared with the automatic path (same lock + increment), so
+numbers stay unique.
+
+> The action message must exist in the environment. Create it with
+> `scripts/New-GenerateAutoNumberAction.ps1` (or import a solution that contains it).
+
 ## FAQ
 
 **Q**: Does the current version work with Lookups?  **A: No. This has been logged as a future enhancement**

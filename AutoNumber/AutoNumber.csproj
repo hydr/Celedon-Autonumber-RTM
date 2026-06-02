@@ -104,6 +104,7 @@
     <Compile Include="CreateAutoNumber.cs" />
     <Compile Include="DeleteAutoNumber.cs" />
     <Compile Include="Extensions.cs" />
+    <Compile Include="GenerateAutoNumberAction.cs" />
     <Compile Include="GetNextAutoNumber.cs" />
     <Compile Include="LocalPluginContext.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
