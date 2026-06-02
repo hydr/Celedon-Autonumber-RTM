@@ -258,6 +258,29 @@ namespace Celedon
 				"cel_nextnumber must advance by exactly the batch size (single increment, no fan-out duplication).");
 		}
 
+		[Test]
+		public void Deactivating_config_removes_steps_and_reactivating_restores_them()
+		{
+			var singleStep = StepName(updateEvent: false);
+			var bulkStep = singleStep + " (CreateMultiple)";
+
+			var configId = CreateAutoNumber(eventCode: 0, triggerAttribute: null,
+				targetAttribute: TargetAttr, prefix: "CI-LC-", digits: 4, nextNumber: 1);
+
+			WaitForStep(singleStep);
+			WaitForStep(bulkStep);
+
+			// Deactivate -> UpdateAutoNumber removes both steps.
+			_client.Update(new Entity("cel_autonumber") { Id = configId, ["statecode"] = new OptionSetValue(1), ["statuscode"] = new OptionSetValue(2) });
+			Assert.That(WaitForStepRemoval(singleStep), Is.True, "Single step must be removed on deactivate.");
+			Assert.That(WaitForStepRemoval(bulkStep), Is.True, "Bulk step must be removed on deactivate.");
+
+			// Reactivate -> steps are registered again (single + bulk).
+			_client.Update(new Entity("cel_autonumber") { Id = configId, ["statecode"] = new OptionSetValue(0), ["statuscode"] = new OptionSetValue(1) });
+			Assert.That(WaitForStep(singleStep), Is.Not.Null, "Single step must be restored on reactivate.");
+			Assert.That(WaitForStep(bulkStep), Is.Not.Null, "Bulk step must be restored on reactivate.");
+		}
+
 		#endregion
 
 		#region Helpers
