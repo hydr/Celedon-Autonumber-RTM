@@ -66,10 +66,12 @@ function Dv-Touch([string]$id, [string]$attributeName) {
 
 Write-Host "Environment: $EnvUrl"
 
-# The lifecycle step must exist, otherwise toggling status would do nothing useful.
+# The lifecycle step must exist, otherwise the update would do nothing useful. A dry-run still
+# previews (read-only) and just warns; a real run aborts.
 $step = Dv-Get "sdkmessageprocessingsteps?`$filter=name eq 'Celedon.UpdateAutoNumber: Update of cel_autonumber'&`$select=sdkmessageprocessingstepid"
 if (@($step.value).Count -eq 0) {
-    throw "The 'Celedon.UpdateAutoNumber' step is not registered. Import the updated AutoNumber solution first."
+    $msg = "The 'Celedon.UpdateAutoNumber' step is not registered — import the updated AutoNumber solution first."
+    if ($DryRun) { Write-Host "[!] $msg (preview only)" -ForegroundColor Yellow } else { throw $msg }
 }
 
 $configs = Dv-Get "cel_autonumbers?`$filter=statecode eq 0&`$select=cel_autonumberid,cel_entityname,cel_attributename"
