@@ -24,6 +24,7 @@ SOFTWARE.
 // Gets the next available number and adds it to the Target
 
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using Celedon.Constants;
 using Microsoft.Xrm.Sdk;
@@ -43,22 +44,47 @@ namespace Celedon
             if (pluginConfig.TryParseJson(out AutoNumberPluginConfig config))
             {
                 RegisterEvent(PipelineStage.PreOperation, config.EventName, config.EntityName, Execute);
+                // Also handle the bulk message (CreateMultiple / UpdateMultiple) so 100 records in one
+                // request are numbered in a single invocation instead of fanning out per record.
+                RegisterEvent(PipelineStage.PreOperation, config.EventName + "Multiple", config.EntityName, Execute);
             }
             else
             {
                 RegisterEvent(PipelineStage.PreOperation, PipelineMessage.Create, pluginConfig, Execute);
+                RegisterEvent(PipelineStage.PreOperation, PipelineMessage.CreateMultiple, pluginConfig, Execute);
             }
+        }
+
+        // One record from the (single or bulk) operation, paired with its pre-image (Update only).
+        private struct TargetItem
+        {
+            public Entity Target;
+            public Entity PreImage;
+            public TargetItem(Entity target, Entity preImage) { Target = target; PreImage = preImage; }
         }
 
         protected void Execute(LocalPluginContext context)
         {
+            var message = context.PluginExecutionContext.MessageName;
+            var isUpdate = message.StartsWith(PipelineMessage.Update, StringComparison.OrdinalIgnoreCase);  // Update or UpdateMultiple
+
+            #region Gather the batch of target records (single Target, or bulk Targets) with their pre-images
+
+            var batch = GetTargets(context);
+            if (batch.Count == 0)
+            {
+                return;
+            }
+
+            #endregion
+
             #region Get the list of autonumber records applicable to the target entity type
 
-            var triggerEvent = context.PluginExecutionContext.MessageName;
             var autoNumberIdList = context.OrganizationDataContext.CreateQuery("cel_autonumber")
-                                                                  .Where(a => a.GetAttributeValue<string>("cel_entityname").Equals(context.PluginExecutionContext.PrimaryEntityName) && a.GetAttributeValue<OptionSetValue>("statecode").Value == 0 && a.GetAttributeValue<OptionSetValue>("cel_triggerevent").Value == (triggerEvent == "Update" ? 1 : 0))
+                                                                  .Where(a => a.GetAttributeValue<string>("cel_entityname").Equals(context.PluginExecutionContext.PrimaryEntityName) && a.GetAttributeValue<OptionSetValue>("statecode").Value == 0 && a.GetAttributeValue<OptionSetValue>("cel_triggerevent").Value == (isUpdate ? 1 : 0))
                                                                   .OrderBy(a => a.GetAttributeValue<Guid>("cel_autonumberid"))  // Insure they are ordered, to prevent deadlocks
-                                                                  .Select(a => a.GetAttributeValue<Guid>("cel_autonumberid"));
+                                                                  .Select(a => a.GetAttributeValue<Guid>("cel_autonumberid"))
+                                                                  .ToList();
             #endregion
 
             #region This loop locks the autonumber record(s) so only THIS transaction can read/write it
@@ -77,12 +103,7 @@ namespace Celedon
 
             #endregion
 
-            #region This loop populates the target record, and updates the autonumber record(s)
-
-            if (!(context.PluginExecutionContext.InputParameters["Target"] is Entity target))
-            {
-                return;
-            }
+            #region For each config, reserve a contiguous number block for the whole batch (one increment)
 
             foreach (var autoNumberId in autoNumberIdList)
             {
@@ -97,67 +118,141 @@ namespace Celedon
                     "cel_suffix"));
 
                 var targetAttribute = autoNumber.GetAttributeValue<string>("cel_attributename");
+                var nextNumber = autoNumber.GetAttributeValue<int>("cel_nextnumber");
+                var startNumber = nextNumber;
+                string lastGenerated = null;
 
-                #region Check conditions that prevent creating an autonumber
-
-                if (context.PluginExecutionContext.MessageName == "Update" && !target.Contains(autoNumber.GetAttributeValue<string>("cel_triggerattribute")))
+                foreach (var item in batch)
                 {
-                    continue;  // Continue, if this is an Update event and the target does not contain the trigger value
+                    var target = item.Target;
+
+                    #region Check conditions that prevent creating an autonumber (per record)
+
+                    if (isUpdate && !target.Contains(autoNumber.GetAttributeValue<string>("cel_triggerattribute")))
+                    {
+                        continue;  // Continue, if this is an Update event and the target does not contain the trigger value
+                    }
+                    else if ((autoNumber.Contains("cel_conditionaloptionset") && (!target.Contains(autoNumber.GetAttributeValue<string>("cel_conditionaloptionset")) || target.GetAttributeValue<OptionSetValue>(autoNumber.GetAttributeValue<string>("cel_conditionaloptionset")).Value != autoNumber.GetAttributeValue<int>("cel_conditionalvalue"))))
+                    {
+                        continue;  // Continue, if this is a conditional optionset
+                    }
+                    else if (target.Contains(targetAttribute) && !string.IsNullOrWhiteSpace(target.GetAttributeValue<string>(targetAttribute)))
+                    {
+                        continue;  // Continue so we don't overwrite a manual value
+                    }
+                    else if (isUpdate && item.PreImage != null && item.PreImage.Contains(targetAttribute) && !string.IsNullOrWhiteSpace(item.PreImage.GetAttributeValue<string>(targetAttribute)))
+                    {
+                        context.TracingService.Trace("Target attribute '{0}' is already populated. Continue, so we don't overwrite an existing value.", targetAttribute);
+                        continue;  // Continue, so we don't overwrite an existing value
+                    }
+                    #endregion
+
+                    // Generate number from the reserved block and insert into the target record.
+                    target[targetAttribute] = FormatAutoNumber(context.OrganizationService, autoNumber, nextNumber, target);
+                    lastGenerated = target.GetAttributeValue<string>(targetAttribute);
+                    nextNumber++;
                 }
-                else if ((autoNumber.Contains("cel_conditionaloptionset") && (!target.Contains(autoNumber.GetAttributeValue<string>("cel_conditionaloptionset")) || target.GetAttributeValue<OptionSetValue>(autoNumber.GetAttributeValue<string>("cel_conditionaloptionset")).Value != autoNumber.GetAttributeValue<int>("cel_conditionalvalue"))))
+
+                // Single increment for the whole batch (only if at least one number was assigned).
+                if (nextNumber != startNumber)
                 {
-                    continue;  // Continue, if this is a conditional optionset
+                    context.OrganizationService.Update(new Entity("cel_autonumber")
+                    {
+                        Id = autoNumber.Id,
+                        ["cel_nextnumber"] = nextNumber,
+                        ["cel_preview"] = lastGenerated
+                    });
                 }
-                else if (target.Contains(targetAttribute) && !string.IsNullOrWhiteSpace(target.GetAttributeValue<string>(targetAttribute)))
+            }
+
+            #endregion
+        }
+
+        // Collects the records to process: a bulk EntityCollection ("Targets" for CreateMultiple/UpdateMultiple),
+        // otherwise the single "Target".  Pre-images are paired per record (collection for bulk, singular otherwise).
+        private static List<TargetItem> GetTargets(LocalPluginContext context)
+        {
+            var ctx = context.PluginExecutionContext;
+            var items = new List<TargetItem>();
+
+            if (ctx.InputParameters.Contains("Targets") && ctx.InputParameters["Targets"] is EntityCollection targets)
+            {
+                var preImages = GetPreImagesCollection(ctx);
+
+                for (var i = 0; i < targets.Entities.Count; i++)
                 {
-                    continue;  // Continue so we don't overwrite a manual value
+                    Entity pre = null;
+                    if (preImages != null && i < preImages.Length && preImages[i] != null && preImages[i].Values.Count > 0)
+                    {
+                        pre = preImages[i].Values.First();
+                    }
+                    items.Add(new TargetItem(targets.Entities[i], pre));
                 }
-                else if (triggerEvent == "Update" && context.PreImage.Contains(targetAttribute) && !string.IsNullOrWhiteSpace(context.PreImage.GetAttributeValue<string>(targetAttribute)))
+            }
+            else if (ctx.InputParameters.Contains("Target") && ctx.InputParameters["Target"] is Entity target)
+            {
+                Entity pre = null;
+                if (ctx.PreEntityImages != null && ctx.PreEntityImages.Values.Count > 0)
                 {
-                    context.TracingService.Trace("Target attribute '{0}' is already populated. Continue, so we don't overwrite an existing value.", targetAttribute);
-                    continue;  // Continue, so we don't overwrite an existing value
-				}
-				#endregion
+                    pre = ctx.PreEntityImages.Values.First();
+                }
+                items.Add(new TargetItem(target, pre));
+            }
 
-				#region Create the AutoNumber
-				// Generate number and insert into target Record (shared core; also used by the on-demand action)
-				target[targetAttribute] = GenerateNumber(context.OrganizationService, context.TracingService, autoNumber, target);
-				#endregion
-			}
-			#endregion
-		}
+            return items;
+        }
 
-		/// <summary>
-		/// Locks the cel_autonumber config record (via cel_preview), builds the formatted number
-		/// (prefix + zero-padded cel_nextnumber + suffix, with {token} replacement resolved against
-		/// <paramref name="parameterContext"/>), increments cel_nextnumber, and returns the result.
-		/// Contains NO pipeline guards (conditional optionset / overwrite / trigger-attribute checks) —
-		/// callers apply whatever guards their context requires.
-		/// </summary>
-		/// <param name="autoNumberConfig">cel_autonumber record holding at least cel_digits, cel_prefix, cel_nextnumber, cel_suffix.</param>
-		/// <param name="parameterContext">Entity used to resolve {token} runtime parameters in prefix/suffix.</param>
-		internal static string GenerateNumber(IOrganizationService service, ITracingService tracing, Entity autoNumberConfig, Entity parameterContext)
-		{
-			// Lock the config row so only this transaction can read/write the counter.
-			service.Update(new Entity("cel_autonumber") { Id = autoNumberConfig.Id, ["cel_preview"] = "555" });
+        // PreEntityImagesCollection (the per-record pre-images for UpdateMultiple) is not on the
+        // IPluginExecutionContext interface in this SDK version, but the runtime context object exposes
+        // it.  Read it via reflection so we don't have to upgrade the SDK package.  Returns null when
+        // unavailable (e.g. CreateMultiple, which has no pre-images anyway).
+        private static EntityImageCollection[] GetPreImagesCollection(IPluginExecutionContext ctx)
+        {
+            try
+            {
+                var prop = ctx.GetType().GetProperty("PreEntityImagesCollection");
+                return prop?.GetValue(ctx) as EntityImageCollection[];
+            }
+            catch
+            {
+                return null;
+            }
+        }
 
-			var numDigits = autoNumberConfig.GetAttributeValue<int>("cel_digits");
-			var prefix = service.ReplaceParameters(parameterContext, autoNumberConfig.GetAttributeValue<string>("cel_prefix"));
-			var number = numDigits == 0 ? "" : autoNumberConfig.GetAttributeValue<int>("cel_nextnumber").ToString("D" + numDigits);
-			var postfix = service.ReplaceParameters(parameterContext, autoNumberConfig.GetAttributeValue<string>("cel_suffix"));
+        // Pure number formatting: prefix + zero-padded numberValue + suffix, with {token} replacement
+        // resolved against parameterContext.  No database access.
+        internal static string FormatAutoNumber(IOrganizationService service, Entity autoNumberConfig, int numberValue, Entity parameterContext)
+        {
+            var numDigits = autoNumberConfig.GetAttributeValue<int>("cel_digits");
+            var prefix = service.ReplaceParameters(parameterContext, autoNumberConfig.GetAttributeValue<string>("cel_prefix"));
+            var number = numDigits == 0 ? "" : numberValue.ToString("D" + numDigits);
+            var postfix = service.ReplaceParameters(parameterContext, autoNumberConfig.GetAttributeValue<string>("cel_suffix"));
+            return $"{prefix}{number}{postfix}";
+        }
 
-			var result = $"{prefix}{number}{postfix}";
-			tracing?.Trace("Generated autonumber '{0}' from config {1}", result, autoNumberConfig.Id);
+        /// <summary>
+        /// Locks the cel_autonumber config record (via cel_preview), builds the formatted number,
+        /// increments cel_nextnumber by one, and returns the result.  Single-record helper used by the
+        /// on-demand action.  Contains NO pipeline guards — callers apply whatever guards they require.
+        /// </summary>
+        internal static string GenerateNumber(IOrganizationService service, ITracingService tracing, Entity autoNumberConfig, Entity parameterContext)
+        {
+            // Lock the config row so only this transaction can read/write the counter.
+            service.Update(new Entity("cel_autonumber") { Id = autoNumberConfig.Id, ["cel_preview"] = "555" });
 
-			// Increment next number in db
-			service.Update(new Entity("cel_autonumber")
-			{
-				Id = autoNumberConfig.Id,
-				["cel_nextnumber"] = autoNumberConfig.GetAttributeValue<int>("cel_nextnumber") + 1,
-				["cel_preview"] = result
-			});
+            var nextNumber = autoNumberConfig.GetAttributeValue<int>("cel_nextnumber");
+            var result = FormatAutoNumber(service, autoNumberConfig, nextNumber, parameterContext);
+            tracing?.Trace("Generated autonumber '{0}' from config {1}", result, autoNumberConfig.Id);
 
-			return result;
-		}
-	}
+            // Increment next number in db
+            service.Update(new Entity("cel_autonumber")
+            {
+                Id = autoNumberConfig.Id,
+                ["cel_nextnumber"] = nextNumber + 1,
+                ["cel_preview"] = result
+            });
+
+            return result;
+        }
+    }
 }

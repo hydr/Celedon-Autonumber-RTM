@@ -26,8 +26,10 @@ namespace Celedon.Constants
     public static class PipelineMessage
     {
         public const string Create = "Create";
+        public const string CreateMultiple = "CreateMultiple";
         public const string Retrieve = "Retrieve";
         public const string Update = "Update";
+        public const string UpdateMultiple = "UpdateMultiple";
         public const string Delete = "Delete";
         public const string RetrieveMultiple = "RetrieveMultiple";
         public const string Associate = "Associate";

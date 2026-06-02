@@ -58,10 +58,13 @@ namespace Celedon
 
 		protected void Execute(LocalPluginContext context)
 		{
+			var entityName = context.PreImage.GetAttributeValue<string>("cel_entityname");
 			var triggerEvent = context.PreImage.Contains("cel_triggerevent") && context.PreImage.GetAttributeValue<OptionSetValue>("cel_triggerevent").Value == 1 ? 1 : 0;
+			var isUpdate = triggerEvent == 1;
+			var eventName = isUpdate ? "Update" : "Create";
 
 			var remainingAutoNumberList = context.OrganizationDataContext.CreateQuery("cel_autonumber")
-																		 .Where(s => s.GetAttributeValue<string>("cel_entityname").Equals(context.PreImage.GetAttributeValue<string>("cel_entityname")))
+																		 .Where(s => s.GetAttributeValue<string>("cel_entityname").Equals(entityName))
 																		 .Select(s => new {
 																			 Id = s.GetAttributeValue<Guid>("cel_autonumberid"),
 																			 TriggerEvent = s.Contains("cel_triggerevent") ? s.GetAttributeValue<OptionSetValue>("cel_triggerevent").Value : 0,
@@ -71,17 +74,18 @@ namespace Celedon
 																		 })
 																		 .ToList();
 
-			var pluginName = string.Format(CreateAutoNumber.PluginName, context.PreImage.GetAttributeValue<string>("cel_entityname"));
-			if (triggerEvent == 1)
+			// Both the single-record step and the bulk (*Multiple) step share this entity/event.
+			var stepNames = new[]
 			{
-				pluginName += " Update";
-			}
+				CreateAutoNumber.StepName(entityName, isUpdate, null),
+				CreateAutoNumber.StepName(entityName, isUpdate, eventName + "Multiple")
+			};
 
 			var remainingForEvent = remainingAutoNumberList.Where(s => s.TriggerEvent == triggerEvent).ToList();
 
-			if (remainingForEvent.Any())  // If there are still other autonumber records on this entity, keep the step but recompute its filter for Update.
+			if (remainingForEvent.Any())  // If there are still other autonumber records on this entity, keep the steps but recompute their filter for Update.
 			{
-				if (triggerEvent == 1)
+				if (isUpdate)
 				{
 					var rebuilt = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 					foreach (var record in remainingForEvent)
@@ -91,47 +95,57 @@ namespace Celedon
 						if (!string.IsNullOrWhiteSpace(record.ConditionalOptionSet)) rebuilt.Add(record.ConditionalOptionSet);
 					}
 
-					var stepId = context.OrganizationDataContext.CreateQuery("sdkmessageprocessingstep")
-																.Where(s => s.GetAttributeValue<string>("name").Equals(pluginName))
-																.Select(s => s.GetAttributeValue<Guid>("sdkmessageprocessingstepid"))
-																.ToList()
-																.FirstOrDefault();
-
-					if (stepId != Guid.Empty)
-					{
-						context.OrganizationService.Update(new Entity("sdkmessageprocessingstep", stepId)
-						{
-							["filteringattributes"] = string.Join(",", rebuilt)
-						});
-					}
+					var filter = string.Join(",", rebuilt);
+					foreach (var name in stepNames) UpdateStepFilter(context, name, filter);
 				}
 
 				return;
 			}
 
-			var pluginStepList = context.OrganizationDataContext.CreateQuery("sdkmessageprocessingstep")
-																.Where(s => s.GetAttributeValue<string>("name").Equals(pluginName))
-																.Select(s => s.GetAttributeValue<Guid>("sdkmessageprocessingstepid"))
-																.ToList();
+			// No records remain for this event — remove both steps (and their images).
+			foreach (var name in stepNames) DeleteStepByName(context, name);
+		}
 
-			if (!pluginStepList.Any())  // Plugin is already deleted, nothing to do here.
+		private static void UpdateStepFilter(LocalPluginContext context, string stepName, string filter)
+		{
+			var stepId = context.OrganizationDataContext.CreateQuery("sdkmessageprocessingstep")
+														.Where(s => s.GetAttributeValue<string>("name").Equals(stepName))
+														.Select(s => s.GetAttributeValue<Guid>("sdkmessageprocessingstepid"))
+														.ToList()
+														.FirstOrDefault();
+			if (stepId != Guid.Empty)
 			{
-				return;  
+				context.OrganizationService.Update(new Entity("sdkmessageprocessingstep", stepId)
+				{
+					["filteringattributes"] = filter
+				});
+			}
+		}
+
+		private static void DeleteStepByName(LocalPluginContext context, string stepName)
+		{
+			var stepId = context.OrganizationDataContext.CreateQuery("sdkmessageprocessingstep")
+														.Where(s => s.GetAttributeValue<string>("name").Equals(stepName))
+														.Select(s => s.GetAttributeValue<Guid>("sdkmessageprocessingstepid"))
+														.ToList()
+														.FirstOrDefault();
+			if (stepId == Guid.Empty)
+			{
+				return;  // Step doesn't exist (e.g. entity had no *Multiple filter) — nothing to do.
 			}
 
-            // Delete all images
-		    var images = context.OrganizationDataContext.CreateQuery("sdkmessageprocessingstepimage")
-		        .Where(s => s.GetAttributeValue<Guid>("sdkmessageprocessingstepid").Equals(pluginStepList.First()))
-		        .Select(s => s.GetAttributeValue<Guid>("sdkmessageprocessingstepimageid"))
-		        .ToList();
+			// Delete all images first
+			var images = context.OrganizationDataContext.CreateQuery("sdkmessageprocessingstepimage")
+				.Where(s => s.GetAttributeValue<Guid>("sdkmessageprocessingstepid").Equals(stepId))
+				.Select(s => s.GetAttributeValue<Guid>("sdkmessageprocessingstepimageid"))
+				.ToList();
 
-		    foreach (var image in images)
-		    {
-		        context.OrganizationService.Delete("sdkmessageprocessingstepimage", image);
-            }
+			foreach (var image in images)
+			{
+				context.OrganizationService.Delete("sdkmessageprocessingstepimage", image);
+			}
 
-            // Delete plugin step
-            context.OrganizationService.Delete("sdkmessageprocessingstep", pluginStepList.First());
+			context.OrganizationService.Delete("sdkmessageprocessingstep", stepId);
 		}
 	}
 }

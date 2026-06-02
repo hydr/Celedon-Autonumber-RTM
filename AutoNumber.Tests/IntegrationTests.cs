@@ -449,6 +449,51 @@ namespace Celedon
 			Assert.That(image.GetAttributeValue<string>("entityalias"), Is.EqualTo("Image"));
 		}
 
+		private void SeedMultipleMessage(string messageName)
+		{
+			var msgId = Guid.NewGuid();
+			var filterId = Guid.NewGuid();
+			_harness.Service.Seed("sdkmessage", msgId, "name", messageName, "sdkmessageid", msgId);
+			_harness.Service.Seed("sdkmessagefilter", filterId,
+				"primaryobjecttypecode", EntityName,
+				"sdkmessageid", new EntityReference("sdkmessage", msgId),
+				"sdkmessagefilterid", filterId);
+		}
+
+		[Test]
+		public void Create_event_also_registers_CreateMultiple_step_when_message_available()
+		{
+			SeedMultipleMessage("CreateMultiple");
+
+			RunCreate(NewAutoNumberRecord(triggerEvent: 0));
+
+			var names = _harness.Service.AllOf("sdkmessageprocessingstep")
+				.Select(s => s.GetAttributeValue<string>("name")).ToList();
+			Assert.That(names, Is.EquivalentTo(new[]
+			{
+				"CeledonPartners.AutoNumber.account",
+				"CeledonPartners.AutoNumber.account (CreateMultiple)"
+			}), "Both the single and the bulk step must be registered.");
+		}
+
+		[Test]
+		public void Update_event_also_registers_UpdateMultiple_step_with_targets_preimage()
+		{
+			SeedMultipleMessage("UpdateMultiple");
+
+			RunCreate(NewAutoNumberRecord(triggerEvent: 1, triggerAttr: TriggerAttr));
+
+			var names = _harness.Service.AllOf("sdkmessageprocessingstep")
+				.Select(s => s.GetAttributeValue<string>("name")).ToList();
+			Assert.That(names, Contains.Item("CeledonPartners.AutoNumber.account Update"));
+			Assert.That(names, Contains.Item("CeledonPartners.AutoNumber.account Update (UpdateMultiple)"));
+
+			var imageProps = _harness.Service.AllOf("sdkmessageprocessingstepimage")
+				.Select(i => i.GetAttributeValue<string>("messagepropertyname")).ToList();
+			Assert.That(imageProps, Contains.Item("Target"), "Single Update step image reads from Target.");
+			Assert.That(imageProps, Contains.Item("Targets"), "Bulk UpdateMultiple step image reads from Targets.");
+		}
+
 		[Test]
 		public void Adding_a_second_update_record_merges_filtering_attributes_into_existing_step()
 		{
@@ -1201,6 +1246,165 @@ namespace Celedon
 
 			Assert.That(() => Run(accountId, attributeName: TargetAttr),
 				Throws.TypeOf<InvalidPluginExecutionException>().With.Message.Contains("multiple"));
+		}
+	}
+
+	#endregion
+
+	#region GetNextAutoNumber — bulk (CreateMultiple / UpdateMultiple)
+
+	[TestFixture]
+	public class GetNextAutoNumberBulkTests
+	{
+		private const string EntityName = "account";
+		private const string TargetAttr = "accountnumber";
+
+		private PluginHarness _harness;
+
+		[SetUp]
+		public void SetUp()
+		{
+			_harness = new PluginHarness
+			{
+				PrimaryEntityName = EntityName,
+				Stage = Constants.PipelineStage.PreOperation,
+			};
+		}
+
+		private Guid SeedAutoNumber(int triggerEvent, int nextNumber, int digits, string prefix,
+			string targetAttr = TargetAttr, string triggerAttr = null,
+			string conditionalAttr = null, int conditionalValue = 0)
+		{
+			var id = Guid.NewGuid();
+			var attrs = new List<object>
+			{
+				"cel_autonumberid", id,
+				"cel_entityname", EntityName,
+				"cel_attributename", targetAttr,
+				"cel_triggerevent", new OptionSetValue(triggerEvent),
+				"cel_digits", digits,
+				"cel_prefix", prefix ?? "",
+				"cel_suffix", "",
+				"cel_nextnumber", nextNumber,
+				"statecode", new OptionSetValue(0),
+			};
+			if (!string.IsNullOrEmpty(triggerAttr)) { attrs.Add("cel_triggerattribute"); attrs.Add(triggerAttr); }
+			if (!string.IsNullOrEmpty(conditionalAttr)) { attrs.Add("cel_conditionaloptionset"); attrs.Add(conditionalAttr); attrs.Add("cel_conditionalvalue"); attrs.Add(conditionalValue); }
+			_harness.Service.Seed("cel_autonumber", id, attrs.ToArray());
+			return id;
+		}
+
+		private static string ConfigJson(string eventName)
+		{
+			return new AutoNumberPluginConfig { EntityName = EntityName, EventName = eventName }.ToJson();
+		}
+
+		private EntityCollection RunMultiple(string message, params Entity[] targets)
+		{
+			_harness.MessageName = message;
+			var collection = new EntityCollection(targets.ToList()) { EntityName = EntityName };
+			_harness.InputParameters["Targets"] = collection;
+			var eventName = message.StartsWith("Update") ? "Update" : "Create";
+			new GetNextAutoNumber(ConfigJson(eventName)).Execute(_harness.Build());
+			return collection;
+		}
+
+		private int ConfigUpdateCount()
+		{
+			return _harness.Service.UpdateCalls.Count(e => e.LogicalName == "cel_autonumber");
+		}
+
+		[Test]
+		public void CreateMultiple_assigns_sequential_numbers_to_all_records()
+		{
+			var cfg = SeedAutoNumber(triggerEvent: 0, nextNumber: 1, digits: 4, prefix: "B-");
+			var t1 = new Entity(EntityName); var t2 = new Entity(EntityName); var t3 = new Entity(EntityName);
+
+			RunMultiple("CreateMultiple", t1, t2, t3);
+
+			Assert.That(t1.GetAttributeValue<string>(TargetAttr), Is.EqualTo("B-0001"));
+			Assert.That(t2.GetAttributeValue<string>(TargetAttr), Is.EqualTo("B-0002"));
+			Assert.That(t3.GetAttributeValue<string>(TargetAttr), Is.EqualTo("B-0003"));
+			Assert.That(_harness.Service.GetStored("cel_autonumber", cfg).GetAttributeValue<int>("cel_nextnumber"),
+				Is.EqualTo(4), "Counter must advance by the batch size, once.");
+		}
+
+		[Test]
+		public void CreateMultiple_increments_counter_once_regardless_of_batch_size()
+		{
+			SeedAutoNumber(triggerEvent: 0, nextNumber: 1, digits: 3, prefix: "B-");
+			var targets = Enumerable.Range(0, 5).Select(_ => new Entity(EntityName)).ToArray();
+
+			RunMultiple("CreateMultiple", targets);
+
+			// One lock + one increment on the config — NOT 2 per record.
+			Assert.That(ConfigUpdateCount(), Is.EqualTo(2),
+				"The shared cel_autonumber row must be written exactly twice (lock + single increment) for the whole batch.");
+		}
+
+		[Test]
+		public void CreateMultiple_skips_records_with_existing_value_and_advances_only_for_assigned()
+		{
+			var cfg = SeedAutoNumber(triggerEvent: 0, nextNumber: 1, digits: 3, prefix: "B-");
+			var t1 = new Entity(EntityName);
+			var t2 = new Entity(EntityName) { [TargetAttr] = "MANUAL" };  // pre-set -> must not be overwritten
+			var t3 = new Entity(EntityName);
+
+			RunMultiple("CreateMultiple", t1, t2, t3);
+
+			Assert.That(t1.GetAttributeValue<string>(TargetAttr), Is.EqualTo("B-001"));
+			Assert.That(t2.GetAttributeValue<string>(TargetAttr), Is.EqualTo("MANUAL"));
+			Assert.That(t3.GetAttributeValue<string>(TargetAttr), Is.EqualTo("B-002"));
+			Assert.That(_harness.Service.GetStored("cel_autonumber", cfg).GetAttributeValue<int>("cel_nextnumber"),
+				Is.EqualTo(3), "Counter advances only for the two records that received a number.");
+		}
+
+		[Test]
+		public void CreateMultiple_conditional_optionset_only_matching_records_get_numbers()
+		{
+			var cfg = SeedAutoNumber(triggerEvent: 0, nextNumber: 1, digits: 2, prefix: "P-",
+				conditionalAttr: "statuscode", conditionalValue: 1);
+			var match1 = new Entity(EntityName) { ["statuscode"] = new OptionSetValue(1) };
+			var noMatch = new Entity(EntityName) { ["statuscode"] = new OptionSetValue(2) };
+			var match2 = new Entity(EntityName) { ["statuscode"] = new OptionSetValue(1) };
+
+			RunMultiple("CreateMultiple", match1, noMatch, match2);
+
+			Assert.That(match1.GetAttributeValue<string>(TargetAttr), Is.EqualTo("P-01"));
+			Assert.That(noMatch.Contains(TargetAttr), Is.False, "Non-matching record must not get a number.");
+			Assert.That(match2.GetAttributeValue<string>(TargetAttr), Is.EqualTo("P-02"));
+			Assert.That(_harness.Service.GetStored("cel_autonumber", cfg).GetAttributeValue<int>("cel_nextnumber"), Is.EqualTo(3));
+		}
+
+		[Test]
+		public void UpdateMultiple_only_records_containing_trigger_attribute_get_numbers()
+		{
+			var cfg = SeedAutoNumber(triggerEvent: 1, nextNumber: 1, digits: 3, prefix: "U-", triggerAttr: "name");
+			var changed1 = new Entity(EntityName) { ["name"] = "changed" };
+			var untouched = new Entity(EntityName) { ["telephone1"] = "555" };  // trigger attr not in this update
+			var changed2 = new Entity(EntityName) { ["name"] = "changed too" };
+
+			RunMultiple("UpdateMultiple", changed1, untouched, changed2);
+
+			Assert.That(changed1.GetAttributeValue<string>(TargetAttr), Is.EqualTo("U-001"));
+			Assert.That(untouched.Contains(TargetAttr), Is.False, "Record without the trigger attribute must be skipped.");
+			Assert.That(changed2.GetAttributeValue<string>(TargetAttr), Is.EqualTo("U-002"));
+			Assert.That(_harness.Service.GetStored("cel_autonumber", cfg).GetAttributeValue<int>("cel_nextnumber"), Is.EqualTo(3));
+		}
+
+		[Test]
+		public void CreateMultiple_no_eligible_records_does_not_increment()
+		{
+			var cfg = SeedAutoNumber(triggerEvent: 0, nextNumber: 7, digits: 3, prefix: "B-");
+			var t1 = new Entity(EntityName) { [TargetAttr] = "X" };
+			var t2 = new Entity(EntityName) { [TargetAttr] = "Y" };
+
+			RunMultiple("CreateMultiple", t1, t2);
+
+			Assert.That(_harness.Service.GetStored("cel_autonumber", cfg).GetAttributeValue<int>("cel_nextnumber"),
+				Is.EqualTo(7), "No eligible record -> counter unchanged.");
+			Assert.That(_harness.Service.UpdateCalls.Any(e => e.LogicalName == "cel_autonumber" && e.Contains("cel_nextnumber")),
+				Is.False, "No increment update should be issued when nothing was assigned.");
 		}
 	}
 

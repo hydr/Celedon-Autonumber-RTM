@@ -56,19 +56,44 @@ namespace Celedon
 		{
 		    context.Trace("Get Target record");
 			var target = context.GetInputParameters<CreateInputParameters>().Target;
-			var pluginName = string.Format(PluginName, target.GetAttributeValue<string>("cel_entityname"));
-
+			var entityName = target.GetAttributeValue<string>("cel_entityname");
 			var isUpdate = target.GetAttributeValue<OptionSetValue>("cel_triggerevent").Value == 1;
-			if (isUpdate)
-			{
-				pluginName += " Update";
-			}
-
+			var eventName = isUpdate ? PipelineMessage.Update : PipelineMessage.Create;
+			var targetAttribute = target.GetAttributeValue<string>("cel_attributename");
 			var filterAttrs = BuildFilterAttributes(target);
 
-		    context.Trace("Check for existing plugin step");
+		    context.Trace("Get the Id of this plugin");
+		    var pluginTypeId = context.OrganizationDataContext.CreateQuery("plugintype")
+				 											   .Where(s => s.GetAttributeValue<string>("name").Equals(typeof(GetNextAutoNumber).FullName))
+															   .Select(s => s.GetAttributeValue<Guid>("plugintypeid"))
+															   .First();
+
+			// Register/merge the single-record step (Create / Update) ...
+			RegisterOrMergeStep(context, entityName, eventName, StepName(entityName, isUpdate, null),
+				isUpdate, targetAttribute, filterAttrs, pluginTypeId, required: true);
+
+			// ... and the bulk step (CreateMultiple / UpdateMultiple) so 100-record requests are numbered
+			// in one invocation.  Skipped (not fatal) if the entity has no *Multiple message filter.
+			var bulkMessage = eventName + "Multiple";
+			RegisterOrMergeStep(context, entityName, bulkMessage, StepName(entityName, isUpdate, bulkMessage),
+				isUpdate, targetAttribute, filterAttrs, pluginTypeId, required: false);
+		}
+
+		// Step name scheme — single steps keep their historical names; bulk steps get a " (Message)" suffix.
+		internal static string StepName(string entityName, bool isUpdate, string bulkMessage)
+		{
+			var name = string.Format(PluginName, entityName);
+			if (isUpdate) { name += " Update"; }
+			if (!string.IsNullOrEmpty(bulkMessage)) { name += " (" + bulkMessage + ")"; }
+			return name;
+		}
+
+		private void RegisterOrMergeStep(LocalPluginContext context, string entityName, string messageName,
+			string stepName, bool isUpdate, string targetAttribute, HashSet<string> filterAttrs, Guid pluginTypeId, bool required)
+		{
+			context.Trace("Check for existing plugin step: " + stepName);
 			var existingStep = context.OrganizationDataContext.CreateQuery("sdkmessageprocessingstep")
-				.Where(s => s.GetAttributeValue<string>("name").Equals(pluginName))
+				.Where(s => s.GetAttributeValue<string>("name").Equals(stepName))
 				.Select(s => new { Id = s.GetAttributeValue<Guid>("sdkmessageprocessingstepid"),
 								   Filter = s.GetAttributeValue<string>("filteringattributes") })
 				.ToList()
@@ -95,39 +120,42 @@ namespace Celedon
 				return;
 			}
 
-		    context.Trace("Build the configuration");
-			var config = new AutoNumberPluginConfig()
-			{
-				EntityName = target.GetAttributeValue<string>("cel_entityname"),
-				EventName = target.GetAttributeValue<OptionSetValue>("cel_triggerevent").Value == 1 ? "Update" : "Create"
-			};
+			var config = new AutoNumberPluginConfig() { EntityName = entityName, EventName = isUpdate ? "Update" : "Create" };
 
-		    context.Trace("Get the Id of this plugin");
-		    var pluginTypeId = context.OrganizationDataContext.CreateQuery("plugintype")
-				 											   .Where(s => s.GetAttributeValue<string>("name").Equals(typeof(GetNextAutoNumber).FullName))
-															   .Select(s => s.GetAttributeValue<Guid>("plugintypeid"))
-															   .First();
-
-		    context.Trace("Get the message id from this org");
-		    var messageId = context.OrganizationDataContext.CreateQuery("sdkmessage")  
-															.Where(s => s.GetAttributeValue<string>("name").Equals(config.EventName))
+		    context.Trace("Get the message id from this org: " + messageName);
+		    var messageId = context.OrganizationDataContext.CreateQuery("sdkmessage")
+															.Where(s => s.GetAttributeValue<string>("name").Equals(messageName))
 															.Select(s => s.GetAttributeValue<Guid>("sdkmessageid"))
-															.First();
+															.ToList()
+															.FirstOrDefault();
+			if (messageId == Guid.Empty)
+			{
+				if (required) { throw new InvalidPluginExecutionException($"SDK message '{messageName}' not found."); }
+				context.Trace($"Message '{messageName}' not found; skipping bulk step.");
+				return;
+			}
 
-		    context.Trace("Get the filterId for for the specific entity from this org");
-			var filterId = context.OrganizationDataContext.CreateQuery("sdkmessagefilter")  
-														   .Where(s => s.GetAttributeValue<string>("primaryobjecttypecode").Equals(config.EntityName)
+		    context.Trace("Get the filterId for the specific entity from this org");
+			var filterId = context.OrganizationDataContext.CreateQuery("sdkmessagefilter")
+														   .Where(s => s.GetAttributeValue<string>("primaryobjecttypecode").Equals(entityName)
 															   && s.GetAttributeValue<EntityReference>("sdkmessageid").Id.Equals(messageId))
 														   .Select(s => s.GetAttributeValue<Guid>("sdkmessagefilterid"))
-														   .First();
+														   .ToList()
+														   .FirstOrDefault();
+			if (filterId == Guid.Empty)
+			{
+				if (required) { throw new InvalidPluginExecutionException($"No message filter for '{messageName}' on '{entityName}'."); }
+				context.Trace($"No '{messageName}' filter for '{entityName}'; skipping bulk step (entity may not support it).");
+				return;
+			}
 
 		    context.Trace("Build new plugin step");
 			var stepAttributes = new AttributeCollection()
 			{
-				{ "name", pluginName },
-				{ "description", pluginName },
+				{ "name", stepName },
+				{ "description", stepName },
 				{ "plugintypeid", pluginTypeId.ToEntityReference("plugintype") },  // This plugin type
-				{ "sdkmessageid", messageId.ToEntityReference("sdkmessage") },  // Create or Update Message
+				{ "sdkmessageid", messageId.ToEntityReference("sdkmessage") },  // Create(Multiple) or Update(Multiple) Message
 				{ "configuration", config.ToJson() },  // EntityName and RegisteredEvent in the UnsecureConfig
 				{ "stage", PipelineStage.PreOperation.ToOptionSetValue() },  // Execution Stage: Pre-Operation
 				{ "rank", 1 },
@@ -150,6 +178,8 @@ namespace Celedon
             // only add the image if the type is update, on create a value cannot be overridden
 		    if (isUpdate)
 		    {
+				// Bulk messages carry the records in "Targets"; single messages in "Target".
+				var messageProperty = messageName.EndsWith("Multiple") ? "Targets" : "Target";
 		        context.Trace("Build new plugin step image");
 		        var newPluginStepImage = new Entity("sdkmessageprocessingstepimage")
 		        {
@@ -157,10 +187,10 @@ namespace Celedon
 		            {
 		                {"sdkmessageprocessingstepid", sdkmessageprocessingstepid.ToEntityReference("sdkmessageprocessingstep")},
 		                {"imagetype", 0.ToOptionSetValue()}, // PreImage
-		                {"messagepropertyname", "Target"},
-		                {"name", "Image"}, 
-		                {"entityalias", "Image"}, 
-		                {"attributes", target.GetAttributeValue<string>("cel_attributename")}, //Only incluce the one attribute we really need. 
+		                {"messagepropertyname", messageProperty},
+		                {"name", "Image"},
+		                {"entityalias", "Image"},
+		                {"attributes", targetAttribute}, //Only incluce the one attribute we really need.
 		            }
 		        };
 
