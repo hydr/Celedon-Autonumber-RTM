@@ -3,9 +3,12 @@ Provides auto-numbering to Dynamics CRM.
 
 > **Fork notice** — this is a crossvertise-maintained fork of
 > [Ardalyst/Celedon-Autonumber-RTM](https://github.com/Ardalyst/Celedon-Autonumber-RTM).
-> It adds a GitHub Actions build/test pipeline, live Dataverse integration tests
-> (see [`LiveTests.md`](LiveTests.md)), and a versioned solution release pipeline
-> (see [`RELEASING.md`](RELEASING.md)).
+> On top of the original plugin it adds: on-demand numbering via a custom action,
+> bulk (CreateMultiple/UpdateMultiple) support, step-lifecycle coupling with a simple
+> migration path, a GitHub Actions build/test pipeline, live Dataverse integration
+> tests (see [`LiveTests.md`](LiveTests.md)), and a versioned solution release
+> pipeline (see [`RELEASING.md`](RELEASING.md)). Usage details are in
+> [`Documentation.md`](Documentation.md).
 
 **Build status**
 
@@ -21,6 +24,31 @@ The following is required to build AutoNumber:
 * [CRM Developer Toolkit - by Jason Lattimer](https://github.com/jlattimer/CRMDeveloperExtensions)
 
 > The current version builds against the Dynamics CRM 2016 - v6.0 SDK and .Net 4.0. You can [look here](https://blogs.msdn.microsoft.com/crm/2017/02/01/dynamics-365-sdk-backwards-compatibility/) for more information on SDK compatibilities. Since this solution does not connect to CRM Via alternative methods we do not need to update the connectivity support that changed in the later versions of CRM-Online for OAuth support.
+
+## v1.4
+* **On-demand number assignment** via the global custom action **`cel_GenerateAutoNumber`** —
+  assign a number to a record from a classic workflow ("Perform Action"), Power Automate
+  ("Perform an unbound action"), JavaScript, or plugin/Web-API code. Inputs `TargetEntity`,
+  `TargetId`, optional `AutoNumberConfigId` / `AttributeName`; output `Number`. The regular
+  trigger condition is bypassed, but an existing value is never overwritten.
+* **Bulk operations optimized for `CreateMultiple` / `UpdateMultiple`** — a batch (e.g. 100 rows in
+  one request) is numbered in a single plugin invocation: one lock + one counter increment for the
+  whole batch instead of fanning out to ~4 service calls per record. Numbers stay unique and
+  sequential; the counter advances by exactly the number of records assigned.
+* **Step lifecycle coupled to the active state** — deactivating a `cel_autonumber` removes its
+  plugin steps (so an inactive config costs nothing in the pipeline); any update of an active config
+  (re)registers them. **Migrating an existing config to the new layout is just a re-save** — no
+  deactivate/reactivate needed and no numbering gap. Migrate many at once with
+  `scripts/Migrate-AutoNumberConfigs.ps1` (supports `-DryRun`).
+* **Transactional guarantees hardened** — the counter is read *after* the row lock is acquired
+  (inside the synchronous pre/post-operation transaction), so concurrent callers never get a
+  duplicate and a rolled-back operation never skips a number.
+* CI runs on the current (Node 24) GitHub Actions; live integration tests cover create/update,
+  on-demand, bulk and the deactivate/reactivate lifecycle.
+
+> Upgrading from a pre-v1.4 install: import the solution, then bring existing `cel_autonumber`
+> configs onto the new step layout by re-saving each one (or run
+> `scripts/Migrate-AutoNumberConfigs.ps1 -DryRun` to preview, then without `-DryRun`).
 
 ## v1.3
 * Update plugin steps are now scoped with `filteringattributes` (trigger attribute,
