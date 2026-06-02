@@ -1,7 +1,7 @@
 name: live-tests
 
 # Live tests run the AutoNumber plugins against a real Dataverse environment.
-# Auth: passwordless OIDC (azure/login@v2 + Federated Credential on the AAD app).
+# Auth: passwordless OIDC (azure/login@v3 + Federated Credential on the AAD app).
 # Trigger: manual only — these tests create real records in your Dataverse org.
 
 on:
@@ -33,15 +33,15 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ inputs.ref }}
 
       - name: Setup MSBuild
-        uses: microsoft/setup-msbuild@v2
+        uses: microsoft/setup-msbuild@v3
 
       - name: Setup NuGet
-        uses: NuGet/setup-nuget@v2
+        uses: NuGet/setup-nuget@v4
 
       - name: Restore NuGet packages
         run: nuget restore AutoNumber.sln
@@ -53,7 +53,7 @@ jobs:
         run: nuget install NUnit.ConsoleRunner -Version 3.18.3 -OutputDirectory testrunner -ExcludeVersion
 
       - name: Azure login (OIDC, federated credentials)
-        uses: azure/login@v2
+        uses: azure/login@v3
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
@@ -127,7 +127,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: live-test-results
           path: TestResult.xml

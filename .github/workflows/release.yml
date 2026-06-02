@@ -29,7 +29,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Compute version
         id: ver
@@ -54,10 +54,10 @@ jobs:
           "version_label=$major.$minor.$patch" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Setup MSBuild
-        uses: microsoft/setup-msbuild@v2
+        uses: microsoft/setup-msbuild@v3
 
       - name: Setup NuGet
-        uses: NuGet/setup-nuget@v2
+        uses: NuGet/setup-nuget@v4
 
       - name: Restore NuGet packages
         run: nuget restore AutoNumber.sln
@@ -80,7 +80,7 @@ jobs:
             -OutputDir "artifacts"
 
       - name: Upload solution artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: solution-zips-${{ steps.ver.outputs.version }}
           path: artifacts/*.zip
