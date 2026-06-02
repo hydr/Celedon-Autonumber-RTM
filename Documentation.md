@@ -114,10 +114,19 @@ and increments the counter a single time. This avoids the per-record lock/increm
 would cause.
 
 This is automatic — newly created `cel_autonumber` configurations register the bulk step
-alongside the single-record step. For configurations that existed **before** this version,
-run the one-time migration `scripts/Register-BulkSteps.ps1` against the environment to add the
-bulk steps. Records that already hold a value are still skipped, and the counter only advances
-by the number of records actually assigned.
+alongside the single-record step. Records that already hold a value are still skipped, and the
+counter only advances by the number of records actually assigned.
+
+### Step lifecycle & migrating existing configs
+
+The plugin steps are now coupled to the config's active state: **deactivating** a `cel_autonumber`
+removes its steps (so an inactive config carries no pipeline cost), and **reactivating** it
+registers the single + bulk steps again. The simplest way to bring a configuration that predates
+this version onto the current layout is therefore to **deactivate and reactivate it** — the bulk
+step is added and any existing filtering is preserved (merged, never duplicated).
+
+To migrate many existing configs at once, run `scripts/Register-BulkSteps.ps1` against the
+environment (use `-DryRun` first to preview exactly what it would add — read-only).
 
 ## FAQ
 
