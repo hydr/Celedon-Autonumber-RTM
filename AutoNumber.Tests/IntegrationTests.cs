@@ -1493,12 +1493,17 @@ namespace Celedon
 
 		private void Run(Entity config, int newStatecode)
 		{
-			_harness.PreEntityImages["Image"] = config;
-			_harness.InputParameters["Target"] = new Entity("cel_autonumber")
+			RunWithTarget(config, new Entity("cel_autonumber")
 			{
 				Id = config.Id,
 				["statecode"] = new OptionSetValue(newStatecode)
-			};
+			});
+		}
+
+		private void RunWithTarget(Entity config, Entity target)
+		{
+			_harness.PreEntityImages["Image"] = config;
+			_harness.InputParameters["Target"] = target;
 			new UpdateAutoNumber().Execute(_harness.Build());
 		}
 
@@ -1629,23 +1634,47 @@ namespace Celedon
 				"A remaining config for the OTHER event must not keep this event's steps alive.");
 		}
 
-		// ---- Guard ----
+		// ---- Plain update (migration without status toggle) & guards ----
 
 		[Test]
-		public void Update_without_statecode_change_is_ignored()
+		public void Plain_update_of_active_config_registers_single_and_bulk_steps()
+		{
+			// Old config with only the single step; a plain field update (no status change) migrates it.
+			SeedStep("CeledonPartners.AutoNumber.account");
+			var config = Config(triggerEvent: 0);
+
+			RunWithTarget(config, new Entity("cel_autonumber") { Id = config.Id, ["cel_attributename"] = TargetAttr });
+
+			Assert.That(StepNames(), Is.EquivalentTo(new[]
+			{
+				"CeledonPartners.AutoNumber.account",
+				"CeledonPartners.AutoNumber.account (CreateMultiple)"
+			}), "A plain update of an active config must (re)register the steps — no deactivate/reactivate needed.");
+		}
+
+		[Test]
+		public void Counter_only_update_is_ignored()
 		{
 			SeedStep("CeledonPartners.AutoNumber.account");
+			var config = Config(triggerEvent: 0);
 
-			_harness.PreEntityImages["Image"] = Config(triggerEvent: 0);
-			_harness.InputParameters["Target"] = new Entity("cel_autonumber")
-			{
-				Id = Guid.NewGuid(),
-				["cel_prefix"] = "changed"  // a non-status field changed
-			};
-			new UpdateAutoNumber().Execute(_harness.Build());
+			// This is exactly what GetNextAutoNumber writes during number generation — must NOT re-register.
+			RunWithTarget(config, new Entity("cel_autonumber") { Id = config.Id, ["cel_preview"] = "555", ["cel_nextnumber"] = 42 });
 
 			Assert.That(StepNames(), Is.EquivalentTo(new[] { "CeledonPartners.AutoNumber.account" }),
-				"A non-status update must not touch the steps.");
+				"A counter-only update (cel_preview/cel_nextnumber) must be ignored.");
+		}
+
+		[Test]
+		public void Empty_update_is_ignored()
+		{
+			SeedStep("CeledonPartners.AutoNumber.account");
+			var config = Config(triggerEvent: 0);
+
+			RunWithTarget(config, new Entity("cel_autonumber") { Id = config.Id });  // no attributes changed
+
+			Assert.That(StepNames(), Is.EquivalentTo(new[] { "CeledonPartners.AutoNumber.account" }),
+				"An empty update must be ignored.");
 		}
 	}
 

@@ -281,6 +281,28 @@ namespace Celedon
 			Assert.That(WaitForStep(bulkStep), Is.Not.Null, "Bulk step must be restored on reactivate.");
 		}
 
+		[Test]
+		public void Plain_update_migrates_config_by_re_adding_missing_bulk_step()
+		{
+			var singleStep = StepName(updateEvent: false);
+			var bulkStep = singleStep + " (CreateMultiple)";
+
+			var configId = CreateAutoNumber(eventCode: 0, triggerAttribute: null,
+				targetAttribute: TargetAttr, prefix: "CI-MIG-", digits: 4, nextNumber: 1);
+			WaitForStep(singleStep);
+			WaitForStep(bulkStep);
+
+			// Simulate an "old" config from before the bulk feature: drop the bulk step.
+			var bulk = QueryStep(bulkStep);
+			_client.Delete("sdkmessageprocessingstep", bulk.Id);
+			Assert.That(WaitForStepRemoval(bulkStep), Is.True);
+
+			// A single plain update (no status change) must re-register the missing bulk step.
+			_client.Update(new Entity("cel_autonumber") { Id = configId, ["cel_attributename"] = TargetAttr });
+			Assert.That(WaitForStep(bulkStep), Is.Not.Null,
+				"A plain update of an active config must re-add the bulk step (migration without deactivate/reactivate).");
+		}
+
 		#endregion
 
 		#region Helpers

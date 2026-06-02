@@ -119,14 +119,17 @@ counter only advances by the number of records actually assigned.
 
 ### Step lifecycle & migrating existing configs
 
-The plugin steps are now coupled to the config's active state: **deactivating** a `cel_autonumber`
-removes its steps (so an inactive config carries no pipeline cost), and **reactivating** it
-registers the single + bulk steps again. The simplest way to bring a configuration that predates
-this version onto the current layout is therefore to **deactivate and reactivate it** — the bulk
-step is added and any existing filtering is preserved (merged, never duplicated).
+Any **update of an active** `cel_autonumber` now (re)registers its single + bulk steps
+idempotently, and **deactivating** one removes its steps (so an inactive config carries no pipeline
+cost). The simplest way to bring a configuration that predates this version onto the current layout
+is therefore to just **re-save it** — the bulk step is added and any existing filtering is preserved
+(merged, never duplicated). The config stays active throughout, so there is no numbering gap.
+(Counter writes during number generation — `cel_preview`/`cel_nextnumber` — are ignored, so this
+does not fire on every number.)
 
-To migrate many existing configs at once, run `scripts/Register-BulkSteps.ps1` against the
-environment (use `-DryRun` first to preview exactly what it would add — read-only).
+To migrate many existing configs at once, run `scripts/Migrate-AutoNumberConfigs.ps1` against the
+environment. It triggers one harmless update (re-save) per active config, letting the plugin do the
+migration; use `-DryRun` first to preview which configs it would touch (read-only).
 
 ## FAQ
 
