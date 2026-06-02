@@ -141,9 +141,15 @@ namespace Celedon
 			// Lock the config row so only this transaction can read/write the counter.
 			service.Update(new Entity("cel_autonumber") { Id = autoNumberConfig.Id, ["cel_preview"] = "555" });
 
+			// Re-read the counter AFTER acquiring the lock.  The passed config was retrieved BEFORE the
+			// lock (the on-demand action retrieves it in ResolveConfig); under READ COMMITTED SNAPSHOT a
+			// pre-lock value could hand the same number to two concurrent callers.
+			var nextNumber = service.Retrieve("cel_autonumber", autoNumberConfig.Id, new ColumnSet("cel_nextnumber"))
+									.GetAttributeValue<int>("cel_nextnumber");
+
 			var numDigits = autoNumberConfig.GetAttributeValue<int>("cel_digits");
 			var prefix = service.ReplaceParameters(parameterContext, autoNumberConfig.GetAttributeValue<string>("cel_prefix"));
-			var number = numDigits == 0 ? "" : autoNumberConfig.GetAttributeValue<int>("cel_nextnumber").ToString("D" + numDigits);
+			var number = numDigits == 0 ? "" : nextNumber.ToString("D" + numDigits);
 			var postfix = service.ReplaceParameters(parameterContext, autoNumberConfig.GetAttributeValue<string>("cel_suffix"));
 
 			var result = $"{prefix}{number}{postfix}";
@@ -153,7 +159,7 @@ namespace Celedon
 			service.Update(new Entity("cel_autonumber")
 			{
 				Id = autoNumberConfig.Id,
-				["cel_nextnumber"] = autoNumberConfig.GetAttributeValue<int>("cel_nextnumber") + 1,
+				["cel_nextnumber"] = nextNumber + 1,
 				["cel_preview"] = result
 			});
 
